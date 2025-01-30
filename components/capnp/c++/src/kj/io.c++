@@ -23,10 +23,6 @@
 #define _GNU_SOURCE
 #endif
 
-#if _WIN32
-#include "win32-api-version.h"
-#endif
-
 #include "io.h"
 #include "debug.h"
 #include "miniposix.h"
@@ -34,12 +30,15 @@
 #include <errno.h>
 #include "vector.h"
 
-#if _WIN32
-#include <windows.h>
-#include "windows-sanity.h"
-#else
-#include <sys/uio.h>
-#endif
+#define __USE_POSIX
+
+// #include <sys/uio.h>
+
+struct iovec 
+{
+    void *iov_base;  /* Base address of a memory region for input or output */
+    size_t iov_len;  /* The size of the memory pointed to by iov_base */
+};
 
 namespace kj {
 

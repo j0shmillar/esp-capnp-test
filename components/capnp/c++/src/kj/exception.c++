@@ -46,10 +46,10 @@
 #include <new>
 #include <signal.h>
 #include <stdint.h>
-#ifndef _WIN32
-#include <sys/mman.h>
-#endif
 #include "io.h"
+
+#include "esp_log.h"
+#include "esp_heap_caps.h"
 
 #if !KJ_NO_RTTI
 #include <typeinfo>
@@ -61,12 +61,6 @@
 #if (__linux__ && __GLIBC__ && !__UCLIBC__) || __APPLE__
 #define KJ_HAS_BACKTRACE 1
 #include <execinfo.h>
-#endif
-
-#if _WIN32 || __CYGWIN__
-#include <windows.h>
-#include "windows-sanity.h"
-#include <dbghelp.h>
 #endif
 
 #if (__linux__ || __APPLE__ || __CYGWIN__)
@@ -623,52 +617,19 @@ namespace {
 
 }  // namespace
 
+// TODO - check
 void printStackTraceOnCrash() {
-  // Set up alternate signal stack so that stack overflows can be handled.
-  stack_t stack;
-  memset(&stack, 0, sizeof(stack));
+    // Allocate memory for the alternate stack using ESP32-specific heap function
+    stack_t stack;
+    memset(&stack, 0, sizeof(stack));
+    stack.ss_size = 65536;
+    stack.ss_sp = reinterpret_cast<char*>(heap_caps_malloc(stack.ss_size, MALLOC_CAP_8BIT));
+    if (!stack.ss_sp) {
+        ESP_LOGE("STACK", "Failed to allocate memory for alternate stack");
+        return;
+    }
 
-#ifndef MAP_ANONYMOUS
-#define MAP_ANONYMOUS MAP_ANON
-#endif
-#ifndef MAP_GROWSDOWN
-#define MAP_GROWSDOWN 0
-#endif
-
-  stack.ss_size = 65536;
-  // Note: ss_sp is char* on FreeBSD, void* on Linux and OSX.
-  stack.ss_sp = reinterpret_cast<char*>(mmap(
-      nullptr, stack.ss_size, PROT_READ | PROT_WRITE,
-      MAP_ANONYMOUS | MAP_PRIVATE | MAP_GROWSDOWN, -1, 0));
-  KJ_SYSCALL(sigaltstack(&stack, nullptr));
-
-  // Catch all relevant signals.
-  struct sigaction action;
-  memset(&action, 0, sizeof(action));
-
-  action.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_NODEFER | SA_RESETHAND;
-  action.sa_sigaction = &crashHandler;
-
-  // Dump stack on common "crash" signals.
-  KJ_SYSCALL(sigaction(SIGSEGV, &action, nullptr));
-  KJ_SYSCALL(sigaction(SIGBUS, &action, nullptr));
-  KJ_SYSCALL(sigaction(SIGFPE, &action, nullptr));
-  KJ_SYSCALL(sigaction(SIGABRT, &action, nullptr));
-  KJ_SYSCALL(sigaction(SIGILL, &action, nullptr));
-
-  // Dump stack on unimplemented syscalls -- useful in seccomp sandboxes.
-  KJ_SYSCALL(sigaction(SIGSYS, &action, nullptr));
-
-#ifdef KJ_DEBUG
-  // Dump stack on keyboard interrupt -- useful for infinite loops. Only in debug mode, though,
-  // because stack traces on ctrl+c can be obnoxious for, say, command-line tools.
-  KJ_SYSCALL(sigaction(SIGINT, &action, nullptr));
-#endif
-
-#if !KJ_NO_EXCEPTIONS
-  // Also override std::terminate() handler with something nicer for KJ.
-  std::set_terminate(&terminateHandler);
-#endif
+    KJ_SYSCALL(sigaltstack(&stack, nullptr));
 }
 #endif
 
