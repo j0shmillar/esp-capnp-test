@@ -1,5 +1,5 @@
-cmake_minimum_required(VERSION 3.4)
-project("Cap'n Proto Root" CXX)
-include(CTest)
-
-add_subdirectory(c++)
+idf_component_register(
+  SRCS "c++/src/capnp/serialize-packed.c++"
+  INCLUDE_DIRS "c++/src"
+  REQUIRES "cxx"
+)
