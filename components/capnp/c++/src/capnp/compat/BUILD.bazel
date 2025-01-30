@@ -1,0 +1,188 @@
+load("@capnp-cpp//src/capnp:cc_capnp_library.bzl", "cc_capnp_library")
+load("@capnp-cpp//src/capnp:rust_capnp_library.bzl", "rust_capnp_library")
+
+exports_files([
+    "json.capnp",
+])
+
+# because git contains generated artifacts (which are used to bootstrap the compiler)
+# we can't have cc_capnp_library for json.capnp. Expose it as cc library and a file.
+cc_library(
+    name = "json",
+    srcs = [
+        "json.c++",
+        "json.capnp.c++",
+    ],
+    hdrs = [
+        "json.capnp.h",
+        "json.h",
+    ],
+    include_prefix = "capnp/compat",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/capnp",
+    ],
+)
+
+cc_library(
+    name = "json-rpc",
+    srcs = [
+        "json-rpc.c++",
+    ],
+    hdrs = [
+        "json-rpc.h",
+    ],
+    include_prefix = "capnp/compat",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":json-rpc_capnp",
+        "//src/kj/compat:kj-http",
+    ],
+)
+
+cc_capnp_library(
+    name = "json-rpc_capnp",
+    srcs = [
+        "json-rpc.capnp",
+    ],
+    include_prefix = "capnp/compat",
+    src_prefix = "src",
+    visibility = ["//visibility:public"],
+)
+
+rust_capnp_library(
+    name = "json_capnp_rust",
+    srcs = ["json.capnp"],
+    crate_name = "json_capnp",
+    src_prefix = "src",
+    target_compatible_with = select({
+        "//src/capnp:gen_rust_true": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    visibility = ["//visibility:public"],
+)
+
+cc_capnp_library(
+    name = "byte-stream_capnp",
+    srcs = ["byte-stream.capnp"],
+    include_prefix = "capnp/compat",
+    src_prefix = "src",
+    visibility = ["//visibility:public"],
+)
+
+rust_capnp_library(
+    name = "byte-stream_capnp_rust",
+    srcs = ["byte-stream.capnp"],
+    crate_name = "byte_stream_capnp",
+    src_prefix = "src",
+    target_compatible_with = select({
+        "//src/capnp:gen_rust_true": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    visibility = ["//visibility:public"],
+)
+
+cc_capnp_library(
+    name = "json-test_capnp",
+    srcs = [
+        "json-test.capnp",
+    ],
+    include_prefix = "capnp/compat",
+    src_prefix = "src",
+    visibility = ["//visibility:public"],
+)
+
+cc_capnp_library(
+    name = "http-over-capnp_capnp",
+    srcs = ["http-over-capnp.capnp"],
+    include_prefix = "capnp/compat",
+    src_prefix = "src",
+    visibility = ["//visibility:public"],
+    deps = [":byte-stream_capnp"],
+)
+
+cc_library(
+    name = "http-over-capnp",
+    srcs = [
+        "byte-stream.c++",
+        "http-over-capnp.c++",
+    ],
+    hdrs = [
+        "byte-stream.h",
+        "http-over-capnp.h",
+    ],
+    include_prefix = "capnp/compat",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":http-over-capnp_capnp",
+        "//src/kj/compat:kj-http",
+    ],
+)
+
+rust_capnp_library(
+    name = "http-over-capnp_capnp_rust",
+    srcs = ["http-over-capnp.capnp"],
+    crate_name = "http_over_capnp_capnp",
+    src_prefix = "src",
+    target_compatible_with = select({
+        "//src/capnp:gen_rust_true": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    visibility = ["//visibility:public"],
+    deps = [":byte-stream_capnp_rust"],
+)
+
+cc_library(
+    name = "websocket-rpc",
+    srcs = [
+        "websocket-rpc.c++",
+    ],
+    hdrs = [
+        "websocket-rpc.h",
+    ],
+    include_prefix = "capnp/compat",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/capnp",
+        "//src/kj/compat:kj-http",
+    ],
+)
+
+[cc_test(
+    name = f.removesuffix(".c++"),
+    srcs = [f],
+    deps = [
+        ":http-over-capnp",
+        ":websocket-rpc",
+        "//src/capnp:capnp-test",
+    ],
+) for f in [
+    "byte-stream-test.c++",
+    "http-over-capnp-test.c++",
+    "http-over-capnp-perf-test.c++",
+    "websocket-rpc-test.c++",
+]]
+
+cc_test(
+    name = "json-rpc-test",
+    srcs = ["json-rpc-test.c++"],
+    deps = [
+        ":json-rpc",
+        "//src/capnp:capnp-test",
+    ],
+)
+
+cc_test(
+    name = "json-test",
+    srcs = ["json-test.c++"],
+    deps = [
+        ":json",
+        ":json-test_capnp",
+        "//src/capnp:capnp-test",
+    ],
+)
+
+cc_library(
+    name = "http-over-capnp-test-as-header",
+    hdrs = ["http-over-capnp-test.c++"],
+)
