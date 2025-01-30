@@ -39,8 +39,7 @@ class AutoCloseHandle;
 class UnixEventPort;
 #endif
 
-class OwnFd;
-using AutoCloseFd = OwnFd;
+class AutoCloseFd;
 class NetworkAddress;
 class AsyncOutputStream;
 class AsyncIoStream;
@@ -110,7 +109,7 @@ class AsyncOutputStream: private AsyncObject {
   // Asynchronous equivalent of OutputStream (from io.h).
 
 public:
-  virtual Promise<void> write(ArrayPtr<const byte> buffer) KJ_WARN_UNUSED_RESULT = 0;
+  virtual Promise<void> write(const void* buffer, size_t size) KJ_WARN_UNUSED_RESULT = 0;
   virtual Promise<void> write(ArrayPtr<const ArrayPtr<const byte>> pieces)
       KJ_WARN_UNUSED_RESULT = 0;
 
@@ -167,30 +166,9 @@ public:
   // be useful. You can't connect() to or listen() on these addresses, obviously, because they are
   // ephemeral addresses for a single connection.
 
-  virtual kj::Maybe<int> getFd() const { return kj::none; }
-  // Get the underlying Unix file descriptor, if any. Returns kj::none if this object actually
+  virtual kj::Maybe<int> getFd() const { return nullptr; }
+  // Get the underlying Unix file descriptor, if any. Returns nullptr if this object actually
   // isn't wrapping a file descriptor.
-
-  virtual kj::Maybe<void*> getWin32Handle() const { return kj::none; }
-  // Get the underlying Win32 HANDLE, if any. Returns nullptr if this object actually isn't
-  // wrapping a handle.
-};
-
-class NullStream final: public AsyncIoStream {
-  // Convenience class that implements an I/O stream that ignores all writes and returns EOF for
-  // all reads.
-  //
-  // Hint: You can also use this class when you just need an input stream or an output stream.
-public:
-  kj::Promise<size_t> tryRead(void* buffer, size_t minBytes, size_t maxBytes) override;
-  kj::Maybe<uint64_t> tryGetLength() override;
-  kj::Promise<uint64_t> pumpTo(kj::AsyncOutputStream& output, uint64_t amount) override;
-
-  kj::Promise<void> write(ArrayPtr<const byte> buffer) override;
-  kj::Promise<void> write(kj::ArrayPtr<const kj::ArrayPtr<const byte>> pieces) override;
-  kj::Promise<void> whenWriteDisconnected() override;
-
-  void shutdownWrite() override;
 };
 
 Promise<uint64_t> unoptimizedPumpTo(
@@ -240,7 +218,7 @@ public:
                                      ArrayPtr<const int> fds) = 0;
   Promise<void> writeWithFds(ArrayPtr<const byte> data,
                              ArrayPtr<const ArrayPtr<const byte>> moreData,
-                             ArrayPtr<const OwnFd> fds);
+                             ArrayPtr<const AutoCloseFd> fds);
   // Write some data to the stream with some file descriptors attached to it.
   //
   // The maximum number of FDs that can be sent at a time is usually subject to an OS-imposed
@@ -253,7 +231,7 @@ public:
   };
 
   virtual Promise<ReadResult> tryReadWithFds(void* buffer, size_t minBytes, size_t maxBytes,
-                                             OwnFd* fdBuffer, size_t maxFds) = 0;
+                                             AutoCloseFd* fdBuffer, size_t maxFds) = 0;
   // Read data from the stream that may have file descriptors attached. Any attached descriptors
   // will be placed in `fdBuffer`. If multiple bundles of FDs are encountered in the course of
   // reading the amount of data requested by minBytes/maxBytes, then they will be concatenated. If
@@ -282,8 +260,8 @@ public:
   Promise<void> sendStream(Own<AsyncCapabilityStream> stream);
   // Transfer a single stream.
 
-  Promise<OwnFd> receiveFd();
-  Promise<Maybe<OwnFd>> tryReceiveFd();
+  Promise<AutoCloseFd> receiveFd();
+  Promise<Maybe<AutoCloseFd>> tryReceiveFd();
   Promise<void> sendFd(int fd);
   // Transfer a single raw file descriptor.
 };
@@ -295,7 +273,7 @@ struct OneWayPipe {
   Own<AsyncOutputStream> out;
 };
 
-OneWayPipe newOneWayPipe(kj::Maybe<uint64_t> expectedLength = kj::none);
+OneWayPipe newOneWayPipe(kj::Maybe<uint64_t> expectedLength = nullptr);
 // Constructs a OneWayPipe that operates in-process. The pipe does not do any buffering -- it waits
 // until both a read() and a write() call are pending, then resolves both.
 //
@@ -502,7 +480,7 @@ public:
   template <typename T>
   inline Maybe<const T&> as() const;
   // Interpret the ancillary message as the given struct type. Most ancillary messages are some
-  // sort of struct, so this is a convenient way to access it. Returns kj::none if the message
+  // sort of struct, so this is a convenient way to access it. Returns nullptr if the message
   // is smaller than the struct -- this can happen if the message was truncated due to
   // insufficient ancillary buffer space.
 
@@ -566,7 +544,7 @@ public:
 
 class DatagramPort {
 public:
-  virtual Promise<size_t> send(ArrayPtr<const byte> buffer, NetworkAddress& destination) = 0;
+  virtual Promise<size_t> send(const void* buffer, size_t size, NetworkAddress& destination) = 0;
   virtual Promise<size_t> send(ArrayPtr<const ArrayPtr<const byte>> pieces,
                                NetworkAddress& destination) = 0;
 
@@ -836,13 +814,9 @@ public:
   // On Windows, the `fd` parameter to each of these methods must be a SOCKET, and must have the
   // flag WSA_FLAG_OVERLAPPED (which socket() uses by default, but WSASocket() wants you to specify
   // explicitly).
-  //
-  // TODO(cleanup): This alias was created when `kj::OwnFd` was called `kj::AutoCloseFd`. Later
-  //   `AutoCloseFd` itself was renamed `OwnFd`, which means this alias now shadows `kj::OwnFd`,
-  //   which is a little weird.
 #else
   typedef int Fd;
-  typedef kj::OwnFd OwnFd;
+  typedef AutoCloseFd OwnFd;
   // On Unix, any arbitrary file descriptor is supported.
 #endif
 
@@ -922,20 +896,12 @@ public:
   Own<ConnectionReceiver> wrapListenSocketFd(OwnFd&& fd, uint flags = 0);
   Own<DatagramPort> wrapDatagramSocketFd(OwnFd&& fd, NetworkFilter& filter, uint flags = 0);
   Own<DatagramPort> wrapDatagramSocketFd(OwnFd&& fd, uint flags = 0);
-  // Convenience wrappers which transfer ownership via OwnFd (Unix) or AutoCloseHandle
+  // Convenience wrappers which transfer ownership via AutoCloseFd (Unix) or AutoCloseHandle
   // (Windows). TAKE_OWNERSHIP will be implicitly added to `flags`.
 };
 
 Own<AsyncIoProvider> newAsyncIoProvider(LowLevelAsyncIoProvider& lowLevel);
 // Make a new AsyncIoProvider wrapping a `LowLevelAsyncIoProvider`.
-
-#if _WIN32
-Own<LowLevelAsyncIoProvider> newLowLevelAsyncIoProvider(Win32EventPort& eventPort);
-// Make a new `LowLevelAsyncIoProvider` backed by a `Win32EventPort`.
-#else
-Own<LowLevelAsyncIoProvider> newLowLevelAsyncIoProvider(UnixEventPort& eventPort);
-// Make a new `LowLevelAsyncIoProvider` backed by a `UnixEventPort`.
-#endif
 
 struct AsyncIoContext {
   Own<LowLevelAsyncIoProvider> lowLevelProvider;
@@ -1059,8 +1025,8 @@ public:
   uint64_t getOffset() { return offset; }
   void seek(uint64_t newOffset) { offset = newOffset; }
 
-  Promise<size_t> tryRead(void* buffer, size_t minBytes, size_t maxBytes) override;
-  Maybe<uint64_t> tryGetLength() override;
+  Promise<size_t> tryRead(void* buffer, size_t minBytes, size_t maxBytes);
+  Maybe<uint64_t> tryGetLength();
 
   // (pumpTo() is not actually overridden here, but AsyncStreamFd's tryPumpFrom() will detect when
   // the source is a file.)
@@ -1089,9 +1055,9 @@ public:
   uint64_t getOffset() { return offset; }
   void seek(uint64_t newOffset) { offset = newOffset; }
 
-  Promise<void> write(kj::ArrayPtr<const byte> buffer) override;
-  Promise<void> write(ArrayPtr<const ArrayPtr<const byte>> pieces) override;
-  Promise<void> whenWriteDisconnected() override;
+  Promise<void> write(const void* buffer, size_t size);
+  Promise<void> write(ArrayPtr<const ArrayPtr<const byte>> pieces);
+  Promise<void> whenWriteDisconnected();
 
 private:
   const File& file;
@@ -1113,7 +1079,7 @@ inline Maybe<const T&> AncillaryMessage::as() const {
   if (data.size() >= sizeof(T)) {
     return *reinterpret_cast<const T*>(data.begin());
   } else {
-    return kj::none;
+    return nullptr;
   }
 }
 
@@ -1129,7 +1095,7 @@ class SecureNetworkWrapper {
   //   actually belongs to the responding server.
   // * No man-in-the-middle attacker can potentially see the bytes sent and received.
   //
-  // The typical implementation uses TLS. The object in this case could be configured to use certain
+  // The typical implementation uses TLS. The object in this case could be configured to use cerain
   // keys, certificates, etc. See kj/compat/tls.h for such an implementation.
   //
   // However, an implementation could use some other form of encryption, or might not need to use
@@ -1147,7 +1113,7 @@ public:
 
   virtual kj::Promise<kj::Own<kj::AsyncIoStream>> wrapClient(
       kj::Own<kj::AsyncIoStream> stream, kj::StringPtr expectedServerHostname) = 0;
-  // Act as the client side of a connection. The given stream is already connected to a server, but
+  // Act as the client side of a connection. The given stream is already connecetd to a server, but
   // no authentication has occurred. This method will verify that the server actually is the given
   // hostname, then return the stream representing a secure transport to that server.
 

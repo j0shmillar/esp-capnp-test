@@ -50,7 +50,7 @@ class Timer: public MonotonicClock {
   // `systemPreciseMonotonicClock()` directly in this case.
 
 public:
-  virtual TimePoint now() const override = 0;
+  virtual TimePoint now() const = 0;
   // Returns the current value of a clock that moves steadily forward, independent of any
   // changes in the wall clock. The value is updated every time the event loop waits,
   // and is constant in-between waits.
@@ -108,25 +108,6 @@ public:
   void advanceTo(TimePoint newTime);
   // Set the time to `time` and fire any at() events that have been passed.
 
-  class SleepHooks {
-  public:
-    virtual void updateNextTimerEvent(kj::Maybe<TimePoint> time) = 0;
-    // Called whenever the value returned by `nextEvent()` changes.
-
-    virtual kj::TimePoint getTimeWhileSleeping() = 0;
-    // Get the current time. While sleeping, we can't lock time in place and advance it on each
-    // poll of the event queue, because arbitrary time might have passed outside the control of
-    // the KJ event loop.
-  };
-
-  void setSleeping(SleepHooks& hooks) { sleepHooks = hooks; }
-  // Hooks needed by UnixEventPort::preparePollableFdForSleep(). When the loop is sleeping, we
-  // would like for the application to be able to invoke the kj::Timer and for it to basically work
-  // correctly. This requires that we make some callbacks to the UnixEventPort to keep things
-  // consistent, since we can't assume the UnixEventPort will be actively polling the TimerImpl.
-  //
-  // The sleep hooks are automatically cleared when advanceTo() is next called.
-
   // implements Timer ----------------------------------------------------------
   TimePoint now() const override;
   Promise<void> atTime(TimePoint time) override;
@@ -137,7 +118,6 @@ private:
   class TimerPromiseAdapter;
   TimePoint time;
   Own<Impl> impl;
-  kj::Maybe<SleepHooks&> sleepHooks;
 };
 
 // =======================================================================================
@@ -156,6 +136,8 @@ Promise<T> Timer::timeoutAfter(Duration delay, Promise<T>&& promise) {
     return makeTimeoutException();
   }));
 }
+
+inline TimePoint TimerImpl::now() const { return time; }
 
 }  // namespace kj
 

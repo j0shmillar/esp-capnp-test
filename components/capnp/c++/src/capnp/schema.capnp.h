@@ -8,7 +8,7 @@
 
 #ifndef CAPNP_VERSION
 #error "CAPNP_VERSION is not defined, is capnp/generated-header-support.h missing?"
-#elif CAPNP_VERSION != 2000000
+#elif CAPNP_VERSION != 1000002
 #error "Version mismatch between generated code and library headers.  You must use the same version of the Cap'n Proto compiler and library."
 #endif
 
@@ -66,9 +66,6 @@ CAPNP_DECLARE_SCHEMA(d85d305b7d839963);
 CAPNP_DECLARE_SCHEMA(bfc546f6210ad7ce);
 CAPNP_DECLARE_SCHEMA(cfea0eb02e810062);
 CAPNP_DECLARE_SCHEMA(ae504193122357e5);
-CAPNP_DECLARE_SCHEMA(f8ea2bf176925da0);
-CAPNP_DECLARE_SCHEMA(dda719892e0499bb);
-CAPNP_DECLARE_SCHEMA(fc69d5e1d630a151);
 
 }  // namespace schemas
 }  // namespace capnp
@@ -100,7 +97,7 @@ struct Node {
   struct Annotation;
 
   struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(e682ab4cf923a417, 6, 6)
+    CAPNP_DECLARE_STRUCT_HEADER(e682ab4cf923a417, 5, 6)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
@@ -146,7 +143,7 @@ struct Node::SourceInfo {
   struct Member;
 
   struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(f38e1de3041357ae, 2, 2)
+    CAPNP_DECLARE_STRUCT_HEADER(f38e1de3041357ae, 1, 2)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
@@ -176,7 +173,7 @@ struct Node::Struct {
   class Pipeline;
 
   struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(9ea0b19b37fb4435, 6, 6)
+    CAPNP_DECLARE_STRUCT_HEADER(9ea0b19b37fb4435, 5, 6)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
@@ -191,7 +188,7 @@ struct Node::Enum {
   class Pipeline;
 
   struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(b54ab3364333f598, 6, 6)
+    CAPNP_DECLARE_STRUCT_HEADER(b54ab3364333f598, 5, 6)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
@@ -206,7 +203,7 @@ struct Node::Interface {
   class Pipeline;
 
   struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(e82753cff0c2218f, 6, 6)
+    CAPNP_DECLARE_STRUCT_HEADER(e82753cff0c2218f, 5, 6)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
@@ -221,7 +218,7 @@ struct Node::Const {
   class Pipeline;
 
   struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(b18aa5ac7a0d9420, 6, 6)
+    CAPNP_DECLARE_STRUCT_HEADER(b18aa5ac7a0d9420, 5, 6)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
@@ -236,7 +233,7 @@ struct Node::Annotation {
   class Pipeline;
 
   struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(ec1619d4400a0290, 6, 6)
+    CAPNP_DECLARE_STRUCT_HEADER(ec1619d4400a0290, 5, 6)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
@@ -681,10 +678,9 @@ struct CodeGeneratorRequest::RequestedFile {
   class Builder;
   class Pipeline;
   struct Import;
-  struct FileSourceInfo;
 
   struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(cfea0eb02e810062, 1, 3)
+    CAPNP_DECLARE_STRUCT_HEADER(cfea0eb02e810062, 1, 2)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
@@ -700,57 +696,6 @@ struct CodeGeneratorRequest::RequestedFile::Import {
 
   struct _capnpPrivate {
     CAPNP_DECLARE_STRUCT_HEADER(ae504193122357e5, 1, 1)
-    #if !CAPNP_LITE
-    static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
-    #endif  // !CAPNP_LITE
-  };
-};
-
-struct CodeGeneratorRequest::RequestedFile::FileSourceInfo {
-  FileSourceInfo() = delete;
-
-  class Reader;
-  class Builder;
-  class Pipeline;
-  struct Identifier;
-
-  struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(f8ea2bf176925da0, 0, 1)
-    #if !CAPNP_LITE
-    static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
-    #endif  // !CAPNP_LITE
-  };
-};
-
-struct CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier {
-  Identifier() = delete;
-
-  class Reader;
-  class Builder;
-  class Pipeline;
-  enum Which: uint16_t {
-    TYPE_ID,
-    MEMBER,
-  };
-  struct Member;
-
-  struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(dda719892e0499bb, 3, 0)
-    #if !CAPNP_LITE
-    static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
-    #endif  // !CAPNP_LITE
-  };
-};
-
-struct CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Member {
-  Member() = delete;
-
-  class Reader;
-  class Builder;
-  class Pipeline;
-
-  struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(fc69d5e1d630a151, 3, 0)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
@@ -814,10 +759,6 @@ public:
   inline  ::capnp::List< ::capnp::schema::Node::Parameter,  ::capnp::Kind::STRUCT>::Reader getParameters() const;
 
   inline bool getIsGeneric() const;
-
-  inline  ::uint32_t getStartByte() const;
-
-  inline  ::uint32_t getEndByte() const;
 
 private:
   ::capnp::_::StructReader _reader;
@@ -911,12 +852,6 @@ public:
 
   inline bool getIsGeneric();
   inline void setIsGeneric(bool value);
-
-  inline  ::uint32_t getStartByte();
-  inline void setStartByte( ::uint32_t value);
-
-  inline  ::uint32_t getEndByte();
-  inline void setEndByte( ::uint32_t value);
 
 private:
   ::capnp::_::StructBuilder _builder;
@@ -1136,10 +1071,6 @@ public:
   inline bool hasMembers() const;
   inline  ::capnp::List< ::capnp::schema::Node::SourceInfo::Member,  ::capnp::Kind::STRUCT>::Reader getMembers() const;
 
-  inline  ::uint32_t getStartByte() const;
-
-  inline  ::uint32_t getEndByte() const;
-
 private:
   ::capnp::_::StructReader _reader;
   template <typename, ::capnp::Kind>
@@ -1184,12 +1115,6 @@ public:
   inline  ::capnp::List< ::capnp::schema::Node::SourceInfo::Member,  ::capnp::Kind::STRUCT>::Builder initMembers(unsigned int size);
   inline void adoptMembers(::capnp::Orphan< ::capnp::List< ::capnp::schema::Node::SourceInfo::Member,  ::capnp::Kind::STRUCT>>&& value);
   inline ::capnp::Orphan< ::capnp::List< ::capnp::schema::Node::SourceInfo::Member,  ::capnp::Kind::STRUCT>> disownMembers();
-
-  inline  ::uint32_t getStartByte();
-  inline void setStartByte( ::uint32_t value);
-
-  inline  ::uint32_t getEndByte();
-  inline void setEndByte( ::uint32_t value);
 
 private:
   ::capnp::_::StructBuilder _builder;
@@ -4240,9 +4165,6 @@ public:
   inline bool hasImports() const;
   inline  ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::Import,  ::capnp::Kind::STRUCT>::Reader getImports() const;
 
-  inline bool hasFileSourceInfo() const;
-  inline  ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Reader getFileSourceInfo() const;
-
 private:
   ::capnp::_::StructReader _reader;
   template <typename, ::capnp::Kind>
@@ -4288,13 +4210,6 @@ public:
   inline void adoptImports(::capnp::Orphan< ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::Import,  ::capnp::Kind::STRUCT>>&& value);
   inline ::capnp::Orphan< ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::Import,  ::capnp::Kind::STRUCT>> disownImports();
 
-  inline bool hasFileSourceInfo();
-  inline  ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Builder getFileSourceInfo();
-  inline void setFileSourceInfo( ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Reader value);
-  inline  ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Builder initFileSourceInfo();
-  inline void adoptFileSourceInfo(::capnp::Orphan< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo>&& value);
-  inline ::capnp::Orphan< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo> disownFileSourceInfo();
-
 private:
   ::capnp::_::StructBuilder _builder;
   template <typename, ::capnp::Kind>
@@ -4313,7 +4228,6 @@ public:
   inline explicit Pipeline(::capnp::AnyPointer::Pipeline&& typeless)
       : _typeless(kj::mv(typeless)) {}
 
-  inline  ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Pipeline getFileSourceInfo();
 private:
   ::capnp::AnyPointer::Pipeline _typeless;
   friend class ::capnp::PipelineHook;
@@ -4395,265 +4309,6 @@ private:
 class CodeGeneratorRequest::RequestedFile::Import::Pipeline {
 public:
   typedef Import Pipelines;
-
-  inline Pipeline(decltype(nullptr)): _typeless(nullptr) {}
-  inline explicit Pipeline(::capnp::AnyPointer::Pipeline&& typeless)
-      : _typeless(kj::mv(typeless)) {}
-
-private:
-  ::capnp::AnyPointer::Pipeline _typeless;
-  friend class ::capnp::PipelineHook;
-  template <typename, ::capnp::Kind>
-  friend struct ::capnp::ToDynamic_;
-};
-#endif  // !CAPNP_LITE
-
-class CodeGeneratorRequest::RequestedFile::FileSourceInfo::Reader {
-public:
-  typedef FileSourceInfo Reads;
-
-  Reader() = default;
-  inline explicit Reader(::capnp::_::StructReader base): _reader(base) {}
-
-  inline ::capnp::MessageSize totalSize() const {
-    return _reader.totalSize().asPublic();
-  }
-
-#if !CAPNP_LITE
-  inline ::kj::StringTree toString() const {
-    return ::capnp::_::structString(_reader, *_capnpPrivate::brand());
-  }
-#endif  // !CAPNP_LITE
-
-  inline bool hasIdentifiers() const;
-  inline  ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier,  ::capnp::Kind::STRUCT>::Reader getIdentifiers() const;
-
-private:
-  ::capnp::_::StructReader _reader;
-  template <typename, ::capnp::Kind>
-  friend struct ::capnp::ToDynamic_;
-  template <typename, ::capnp::Kind>
-  friend struct ::capnp::_::PointerHelpers;
-  template <typename, ::capnp::Kind>
-  friend struct ::capnp::List;
-  friend class ::capnp::MessageBuilder;
-  friend class ::capnp::Orphanage;
-};
-
-class CodeGeneratorRequest::RequestedFile::FileSourceInfo::Builder {
-public:
-  typedef FileSourceInfo Builds;
-
-  Builder() = delete;  // Deleted to discourage incorrect usage.
-                       // You can explicitly initialize to nullptr instead.
-  inline Builder(decltype(nullptr)) {}
-  inline explicit Builder(::capnp::_::StructBuilder base): _builder(base) {}
-  inline operator Reader() const { return Reader(_builder.asReader()); }
-  inline Reader asReader() const { return *this; }
-
-  inline ::capnp::MessageSize totalSize() const { return asReader().totalSize(); }
-#if !CAPNP_LITE
-  inline ::kj::StringTree toString() const { return asReader().toString(); }
-#endif  // !CAPNP_LITE
-
-  inline bool hasIdentifiers();
-  inline  ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier,  ::capnp::Kind::STRUCT>::Builder getIdentifiers();
-  inline void setIdentifiers( ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier,  ::capnp::Kind::STRUCT>::Reader value);
-  inline  ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier,  ::capnp::Kind::STRUCT>::Builder initIdentifiers(unsigned int size);
-  inline void adoptIdentifiers(::capnp::Orphan< ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier,  ::capnp::Kind::STRUCT>>&& value);
-  inline ::capnp::Orphan< ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier,  ::capnp::Kind::STRUCT>> disownIdentifiers();
-
-private:
-  ::capnp::_::StructBuilder _builder;
-  template <typename, ::capnp::Kind>
-  friend struct ::capnp::ToDynamic_;
-  friend class ::capnp::Orphanage;
-  template <typename, ::capnp::Kind>
-  friend struct ::capnp::_::PointerHelpers;
-};
-
-#if !CAPNP_LITE
-class CodeGeneratorRequest::RequestedFile::FileSourceInfo::Pipeline {
-public:
-  typedef FileSourceInfo Pipelines;
-
-  inline Pipeline(decltype(nullptr)): _typeless(nullptr) {}
-  inline explicit Pipeline(::capnp::AnyPointer::Pipeline&& typeless)
-      : _typeless(kj::mv(typeless)) {}
-
-private:
-  ::capnp::AnyPointer::Pipeline _typeless;
-  friend class ::capnp::PipelineHook;
-  template <typename, ::capnp::Kind>
-  friend struct ::capnp::ToDynamic_;
-};
-#endif  // !CAPNP_LITE
-
-class CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Reader {
-public:
-  typedef Identifier Reads;
-
-  Reader() = default;
-  inline explicit Reader(::capnp::_::StructReader base): _reader(base) {}
-
-  inline ::capnp::MessageSize totalSize() const {
-    return _reader.totalSize().asPublic();
-  }
-
-#if !CAPNP_LITE
-  inline ::kj::StringTree toString() const {
-    return ::capnp::_::structString(_reader, *_capnpPrivate::brand());
-  }
-#endif  // !CAPNP_LITE
-
-  inline Which which() const;
-  inline  ::uint32_t getStartByte() const;
-
-  inline  ::uint32_t getEndByte() const;
-
-  inline bool isTypeId() const;
-  inline  ::uint64_t getTypeId() const;
-
-  inline bool isMember() const;
-  inline typename Member::Reader getMember() const;
-
-private:
-  ::capnp::_::StructReader _reader;
-  template <typename, ::capnp::Kind>
-  friend struct ::capnp::ToDynamic_;
-  template <typename, ::capnp::Kind>
-  friend struct ::capnp::_::PointerHelpers;
-  template <typename, ::capnp::Kind>
-  friend struct ::capnp::List;
-  friend class ::capnp::MessageBuilder;
-  friend class ::capnp::Orphanage;
-};
-
-class CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Builder {
-public:
-  typedef Identifier Builds;
-
-  Builder() = delete;  // Deleted to discourage incorrect usage.
-                       // You can explicitly initialize to nullptr instead.
-  inline Builder(decltype(nullptr)) {}
-  inline explicit Builder(::capnp::_::StructBuilder base): _builder(base) {}
-  inline operator Reader() const { return Reader(_builder.asReader()); }
-  inline Reader asReader() const { return *this; }
-
-  inline ::capnp::MessageSize totalSize() const { return asReader().totalSize(); }
-#if !CAPNP_LITE
-  inline ::kj::StringTree toString() const { return asReader().toString(); }
-#endif  // !CAPNP_LITE
-
-  inline Which which();
-  inline  ::uint32_t getStartByte();
-  inline void setStartByte( ::uint32_t value);
-
-  inline  ::uint32_t getEndByte();
-  inline void setEndByte( ::uint32_t value);
-
-  inline bool isTypeId();
-  inline  ::uint64_t getTypeId();
-  inline void setTypeId( ::uint64_t value);
-
-  inline bool isMember();
-  inline typename Member::Builder getMember();
-  inline typename Member::Builder initMember();
-
-private:
-  ::capnp::_::StructBuilder _builder;
-  template <typename, ::capnp::Kind>
-  friend struct ::capnp::ToDynamic_;
-  friend class ::capnp::Orphanage;
-  template <typename, ::capnp::Kind>
-  friend struct ::capnp::_::PointerHelpers;
-};
-
-#if !CAPNP_LITE
-class CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Pipeline {
-public:
-  typedef Identifier Pipelines;
-
-  inline Pipeline(decltype(nullptr)): _typeless(nullptr) {}
-  inline explicit Pipeline(::capnp::AnyPointer::Pipeline&& typeless)
-      : _typeless(kj::mv(typeless)) {}
-
-private:
-  ::capnp::AnyPointer::Pipeline _typeless;
-  friend class ::capnp::PipelineHook;
-  template <typename, ::capnp::Kind>
-  friend struct ::capnp::ToDynamic_;
-};
-#endif  // !CAPNP_LITE
-
-class CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Member::Reader {
-public:
-  typedef Member Reads;
-
-  Reader() = default;
-  inline explicit Reader(::capnp::_::StructReader base): _reader(base) {}
-
-  inline ::capnp::MessageSize totalSize() const {
-    return _reader.totalSize().asPublic();
-  }
-
-#if !CAPNP_LITE
-  inline ::kj::StringTree toString() const {
-    return ::capnp::_::structString(_reader, *_capnpPrivate::brand());
-  }
-#endif  // !CAPNP_LITE
-
-  inline  ::uint64_t getParentTypeId() const;
-
-  inline  ::uint16_t getOrdinal() const;
-
-private:
-  ::capnp::_::StructReader _reader;
-  template <typename, ::capnp::Kind>
-  friend struct ::capnp::ToDynamic_;
-  template <typename, ::capnp::Kind>
-  friend struct ::capnp::_::PointerHelpers;
-  template <typename, ::capnp::Kind>
-  friend struct ::capnp::List;
-  friend class ::capnp::MessageBuilder;
-  friend class ::capnp::Orphanage;
-};
-
-class CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Member::Builder {
-public:
-  typedef Member Builds;
-
-  Builder() = delete;  // Deleted to discourage incorrect usage.
-                       // You can explicitly initialize to nullptr instead.
-  inline Builder(decltype(nullptr)) {}
-  inline explicit Builder(::capnp::_::StructBuilder base): _builder(base) {}
-  inline operator Reader() const { return Reader(_builder.asReader()); }
-  inline Reader asReader() const { return *this; }
-
-  inline ::capnp::MessageSize totalSize() const { return asReader().totalSize(); }
-#if !CAPNP_LITE
-  inline ::kj::StringTree toString() const { return asReader().toString(); }
-#endif  // !CAPNP_LITE
-
-  inline  ::uint64_t getParentTypeId();
-  inline void setParentTypeId( ::uint64_t value);
-
-  inline  ::uint16_t getOrdinal();
-  inline void setOrdinal( ::uint16_t value);
-
-private:
-  ::capnp::_::StructBuilder _builder;
-  template <typename, ::capnp::Kind>
-  friend struct ::capnp::ToDynamic_;
-  friend class ::capnp::Orphanage;
-  template <typename, ::capnp::Kind>
-  friend struct ::capnp::_::PointerHelpers;
-};
-
-#if !CAPNP_LITE
-class CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Member::Pipeline {
-public:
-  typedef Member Pipelines;
 
   inline Pipeline(decltype(nullptr)): _typeless(nullptr) {}
   inline explicit Pipeline(::capnp::AnyPointer::Pipeline&& typeless)
@@ -5026,34 +4681,6 @@ inline void Node::Builder::setIsGeneric(bool value) {
       ::capnp::bounded<288>() * ::capnp::ELEMENTS, value);
 }
 
-inline  ::uint32_t Node::Reader::getStartByte() const {
-  return _reader.getDataField< ::uint32_t>(
-      ::capnp::bounded<10>() * ::capnp::ELEMENTS);
-}
-
-inline  ::uint32_t Node::Builder::getStartByte() {
-  return _builder.getDataField< ::uint32_t>(
-      ::capnp::bounded<10>() * ::capnp::ELEMENTS);
-}
-inline void Node::Builder::setStartByte( ::uint32_t value) {
-  _builder.setDataField< ::uint32_t>(
-      ::capnp::bounded<10>() * ::capnp::ELEMENTS, value);
-}
-
-inline  ::uint32_t Node::Reader::getEndByte() const {
-  return _reader.getDataField< ::uint32_t>(
-      ::capnp::bounded<11>() * ::capnp::ELEMENTS);
-}
-
-inline  ::uint32_t Node::Builder::getEndByte() {
-  return _builder.getDataField< ::uint32_t>(
-      ::capnp::bounded<11>() * ::capnp::ELEMENTS);
-}
-inline void Node::Builder::setEndByte( ::uint32_t value) {
-  _builder.setDataField< ::uint32_t>(
-      ::capnp::bounded<11>() * ::capnp::ELEMENTS, value);
-}
-
 inline bool Node::Parameter::Reader::hasName() const {
   return !_reader.getPointerField(
       ::capnp::bounded<0>() * ::capnp::POINTERS).isNull();
@@ -5216,34 +4843,6 @@ inline void Node::SourceInfo::Builder::adoptMembers(
 inline ::capnp::Orphan< ::capnp::List< ::capnp::schema::Node::SourceInfo::Member,  ::capnp::Kind::STRUCT>> Node::SourceInfo::Builder::disownMembers() {
   return ::capnp::_::PointerHelpers< ::capnp::List< ::capnp::schema::Node::SourceInfo::Member,  ::capnp::Kind::STRUCT>>::disown(_builder.getPointerField(
       ::capnp::bounded<1>() * ::capnp::POINTERS));
-}
-
-inline  ::uint32_t Node::SourceInfo::Reader::getStartByte() const {
-  return _reader.getDataField< ::uint32_t>(
-      ::capnp::bounded<2>() * ::capnp::ELEMENTS);
-}
-
-inline  ::uint32_t Node::SourceInfo::Builder::getStartByte() {
-  return _builder.getDataField< ::uint32_t>(
-      ::capnp::bounded<2>() * ::capnp::ELEMENTS);
-}
-inline void Node::SourceInfo::Builder::setStartByte( ::uint32_t value) {
-  _builder.setDataField< ::uint32_t>(
-      ::capnp::bounded<2>() * ::capnp::ELEMENTS, value);
-}
-
-inline  ::uint32_t Node::SourceInfo::Reader::getEndByte() const {
-  return _reader.getDataField< ::uint32_t>(
-      ::capnp::bounded<3>() * ::capnp::ELEMENTS);
-}
-
-inline  ::uint32_t Node::SourceInfo::Builder::getEndByte() {
-  return _builder.getDataField< ::uint32_t>(
-      ::capnp::bounded<3>() * ::capnp::ELEMENTS);
-}
-inline void Node::SourceInfo::Builder::setEndByte( ::uint32_t value) {
-  _builder.setDataField< ::uint32_t>(
-      ::capnp::bounded<3>() * ::capnp::ELEMENTS, value);
 }
 
 inline bool Node::SourceInfo::Member::Reader::hasDocComment() const {
@@ -8583,45 +8182,6 @@ inline ::capnp::Orphan< ::capnp::List< ::capnp::schema::CodeGeneratorRequest::Re
       ::capnp::bounded<1>() * ::capnp::POINTERS));
 }
 
-inline bool CodeGeneratorRequest::RequestedFile::Reader::hasFileSourceInfo() const {
-  return !_reader.getPointerField(
-      ::capnp::bounded<2>() * ::capnp::POINTERS).isNull();
-}
-inline bool CodeGeneratorRequest::RequestedFile::Builder::hasFileSourceInfo() {
-  return !_builder.getPointerField(
-      ::capnp::bounded<2>() * ::capnp::POINTERS).isNull();
-}
-inline  ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Reader CodeGeneratorRequest::RequestedFile::Reader::getFileSourceInfo() const {
-  return ::capnp::_::PointerHelpers< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo>::get(_reader.getPointerField(
-      ::capnp::bounded<2>() * ::capnp::POINTERS));
-}
-inline  ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Builder CodeGeneratorRequest::RequestedFile::Builder::getFileSourceInfo() {
-  return ::capnp::_::PointerHelpers< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo>::get(_builder.getPointerField(
-      ::capnp::bounded<2>() * ::capnp::POINTERS));
-}
-#if !CAPNP_LITE
-inline  ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Pipeline CodeGeneratorRequest::RequestedFile::Pipeline::getFileSourceInfo() {
-  return  ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Pipeline(_typeless.getPointerField(2));
-}
-#endif  // !CAPNP_LITE
-inline void CodeGeneratorRequest::RequestedFile::Builder::setFileSourceInfo( ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Reader value) {
-  ::capnp::_::PointerHelpers< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo>::set(_builder.getPointerField(
-      ::capnp::bounded<2>() * ::capnp::POINTERS), value);
-}
-inline  ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Builder CodeGeneratorRequest::RequestedFile::Builder::initFileSourceInfo() {
-  return ::capnp::_::PointerHelpers< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo>::init(_builder.getPointerField(
-      ::capnp::bounded<2>() * ::capnp::POINTERS));
-}
-inline void CodeGeneratorRequest::RequestedFile::Builder::adoptFileSourceInfo(
-    ::capnp::Orphan< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo>&& value) {
-  ::capnp::_::PointerHelpers< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo>::adopt(_builder.getPointerField(
-      ::capnp::bounded<2>() * ::capnp::POINTERS), kj::mv(value));
-}
-inline ::capnp::Orphan< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo> CodeGeneratorRequest::RequestedFile::Builder::disownFileSourceInfo() {
-  return ::capnp::_::PointerHelpers< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo>::disown(_builder.getPointerField(
-      ::capnp::bounded<2>() * ::capnp::POINTERS));
-}
-
 inline  ::uint64_t CodeGeneratorRequest::RequestedFile::Import::Reader::getId() const {
   return _reader.getDataField< ::uint64_t>(
       ::capnp::bounded<0>() * ::capnp::ELEMENTS);
@@ -8668,154 +8228,6 @@ inline void CodeGeneratorRequest::RequestedFile::Import::Builder::adoptName(
 inline ::capnp::Orphan< ::capnp::Text> CodeGeneratorRequest::RequestedFile::Import::Builder::disownName() {
   return ::capnp::_::PointerHelpers< ::capnp::Text>::disown(_builder.getPointerField(
       ::capnp::bounded<0>() * ::capnp::POINTERS));
-}
-
-inline bool CodeGeneratorRequest::RequestedFile::FileSourceInfo::Reader::hasIdentifiers() const {
-  return !_reader.getPointerField(
-      ::capnp::bounded<0>() * ::capnp::POINTERS).isNull();
-}
-inline bool CodeGeneratorRequest::RequestedFile::FileSourceInfo::Builder::hasIdentifiers() {
-  return !_builder.getPointerField(
-      ::capnp::bounded<0>() * ::capnp::POINTERS).isNull();
-}
-inline  ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier,  ::capnp::Kind::STRUCT>::Reader CodeGeneratorRequest::RequestedFile::FileSourceInfo::Reader::getIdentifiers() const {
-  return ::capnp::_::PointerHelpers< ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier,  ::capnp::Kind::STRUCT>>::get(_reader.getPointerField(
-      ::capnp::bounded<0>() * ::capnp::POINTERS));
-}
-inline  ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier,  ::capnp::Kind::STRUCT>::Builder CodeGeneratorRequest::RequestedFile::FileSourceInfo::Builder::getIdentifiers() {
-  return ::capnp::_::PointerHelpers< ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier,  ::capnp::Kind::STRUCT>>::get(_builder.getPointerField(
-      ::capnp::bounded<0>() * ::capnp::POINTERS));
-}
-inline void CodeGeneratorRequest::RequestedFile::FileSourceInfo::Builder::setIdentifiers( ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier,  ::capnp::Kind::STRUCT>::Reader value) {
-  ::capnp::_::PointerHelpers< ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier,  ::capnp::Kind::STRUCT>>::set(_builder.getPointerField(
-      ::capnp::bounded<0>() * ::capnp::POINTERS), value);
-}
-inline  ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier,  ::capnp::Kind::STRUCT>::Builder CodeGeneratorRequest::RequestedFile::FileSourceInfo::Builder::initIdentifiers(unsigned int size) {
-  return ::capnp::_::PointerHelpers< ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier,  ::capnp::Kind::STRUCT>>::init(_builder.getPointerField(
-      ::capnp::bounded<0>() * ::capnp::POINTERS), size);
-}
-inline void CodeGeneratorRequest::RequestedFile::FileSourceInfo::Builder::adoptIdentifiers(
-    ::capnp::Orphan< ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier,  ::capnp::Kind::STRUCT>>&& value) {
-  ::capnp::_::PointerHelpers< ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier,  ::capnp::Kind::STRUCT>>::adopt(_builder.getPointerField(
-      ::capnp::bounded<0>() * ::capnp::POINTERS), kj::mv(value));
-}
-inline ::capnp::Orphan< ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier,  ::capnp::Kind::STRUCT>> CodeGeneratorRequest::RequestedFile::FileSourceInfo::Builder::disownIdentifiers() {
-  return ::capnp::_::PointerHelpers< ::capnp::List< ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier,  ::capnp::Kind::STRUCT>>::disown(_builder.getPointerField(
-      ::capnp::bounded<0>() * ::capnp::POINTERS));
-}
-
-inline  ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Which CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Reader::which() const {
-  return _reader.getDataField<Which>(
-      ::capnp::bounded<8>() * ::capnp::ELEMENTS);
-}
-inline  ::capnp::schema::CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Which CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Builder::which() {
-  return _builder.getDataField<Which>(
-      ::capnp::bounded<8>() * ::capnp::ELEMENTS);
-}
-
-inline  ::uint32_t CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Reader::getStartByte() const {
-  return _reader.getDataField< ::uint32_t>(
-      ::capnp::bounded<0>() * ::capnp::ELEMENTS);
-}
-
-inline  ::uint32_t CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Builder::getStartByte() {
-  return _builder.getDataField< ::uint32_t>(
-      ::capnp::bounded<0>() * ::capnp::ELEMENTS);
-}
-inline void CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Builder::setStartByte( ::uint32_t value) {
-  _builder.setDataField< ::uint32_t>(
-      ::capnp::bounded<0>() * ::capnp::ELEMENTS, value);
-}
-
-inline  ::uint32_t CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Reader::getEndByte() const {
-  return _reader.getDataField< ::uint32_t>(
-      ::capnp::bounded<1>() * ::capnp::ELEMENTS);
-}
-
-inline  ::uint32_t CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Builder::getEndByte() {
-  return _builder.getDataField< ::uint32_t>(
-      ::capnp::bounded<1>() * ::capnp::ELEMENTS);
-}
-inline void CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Builder::setEndByte( ::uint32_t value) {
-  _builder.setDataField< ::uint32_t>(
-      ::capnp::bounded<1>() * ::capnp::ELEMENTS, value);
-}
-
-inline bool CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Reader::isTypeId() const {
-  return which() == CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::TYPE_ID;
-}
-inline bool CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Builder::isTypeId() {
-  return which() == CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::TYPE_ID;
-}
-inline  ::uint64_t CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Reader::getTypeId() const {
-  KJ_IREQUIRE((which() == CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::TYPE_ID),
-              "Must check which() before get()ing a union member.");
-  return _reader.getDataField< ::uint64_t>(
-      ::capnp::bounded<1>() * ::capnp::ELEMENTS);
-}
-
-inline  ::uint64_t CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Builder::getTypeId() {
-  KJ_IREQUIRE((which() == CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::TYPE_ID),
-              "Must check which() before get()ing a union member.");
-  return _builder.getDataField< ::uint64_t>(
-      ::capnp::bounded<1>() * ::capnp::ELEMENTS);
-}
-inline void CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Builder::setTypeId( ::uint64_t value) {
-  _builder.setDataField<CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Which>(
-      ::capnp::bounded<8>() * ::capnp::ELEMENTS, CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::TYPE_ID);
-  _builder.setDataField< ::uint64_t>(
-      ::capnp::bounded<1>() * ::capnp::ELEMENTS, value);
-}
-
-inline bool CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Reader::isMember() const {
-  return which() == CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::MEMBER;
-}
-inline bool CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Builder::isMember() {
-  return which() == CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::MEMBER;
-}
-inline typename CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Member::Reader CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Reader::getMember() const {
-  KJ_IREQUIRE((which() == CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::MEMBER),
-              "Must check which() before get()ing a union member.");
-  return typename CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Member::Reader(_reader);
-}
-inline typename CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Member::Builder CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Builder::getMember() {
-  KJ_IREQUIRE((which() == CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::MEMBER),
-              "Must check which() before get()ing a union member.");
-  return typename CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Member::Builder(_builder);
-}
-inline typename CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Member::Builder CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Builder::initMember() {
-  _builder.setDataField<CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Which>(
-      ::capnp::bounded<8>() * ::capnp::ELEMENTS, CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::MEMBER);
-  _builder.setDataField< ::uint64_t>(::capnp::bounded<1>() * ::capnp::ELEMENTS, 0);
-  _builder.setDataField< ::uint16_t>(::capnp::bounded<9>() * ::capnp::ELEMENTS, 0);
-  return typename CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Member::Builder(_builder);
-}
-inline  ::uint64_t CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Member::Reader::getParentTypeId() const {
-  return _reader.getDataField< ::uint64_t>(
-      ::capnp::bounded<1>() * ::capnp::ELEMENTS);
-}
-
-inline  ::uint64_t CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Member::Builder::getParentTypeId() {
-  return _builder.getDataField< ::uint64_t>(
-      ::capnp::bounded<1>() * ::capnp::ELEMENTS);
-}
-inline void CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Member::Builder::setParentTypeId( ::uint64_t value) {
-  _builder.setDataField< ::uint64_t>(
-      ::capnp::bounded<1>() * ::capnp::ELEMENTS, value);
-}
-
-inline  ::uint16_t CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Member::Reader::getOrdinal() const {
-  return _reader.getDataField< ::uint16_t>(
-      ::capnp::bounded<9>() * ::capnp::ELEMENTS);
-}
-
-inline  ::uint16_t CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Member::Builder::getOrdinal() {
-  return _builder.getDataField< ::uint16_t>(
-      ::capnp::bounded<9>() * ::capnp::ELEMENTS);
-}
-inline void CodeGeneratorRequest::RequestedFile::FileSourceInfo::Identifier::Member::Builder::setOrdinal( ::uint16_t value) {
-  _builder.setDataField< ::uint16_t>(
-      ::capnp::bounded<9>() * ::capnp::ELEMENTS, value);
 }
 
 }  // namespace

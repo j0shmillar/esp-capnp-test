@@ -23,7 +23,6 @@
 #include "test.h"
 #include <inttypes.h>
 #include <kj/compat/gtest.h>
-#include <span>
 
 namespace kj {
 namespace {
@@ -63,15 +62,15 @@ struct CopyOrMove {
 TEST(Common, Maybe) {
   {
     Maybe<int> m = 123;
-    EXPECT_FALSE(m == kj::none);
-    EXPECT_TRUE(m != kj::none);
-    KJ_IF_SOME(v, m) {
-      EXPECT_EQ(123, v);
+    EXPECT_FALSE(m == nullptr);
+    EXPECT_TRUE(m != nullptr);
+    KJ_IF_MAYBE(v, m) {
+      EXPECT_EQ(123, *v);
     } else {
       ADD_FAILURE();
     }
-    KJ_IF_SOME(v, mv(m)) {
-      EXPECT_EQ(123, v);
+    KJ_IF_MAYBE(v, mv(m)) {
+      EXPECT_EQ(123, *v);
     } else {
       ADD_FAILURE();
     }
@@ -83,12 +82,12 @@ TEST(Common, Maybe) {
     }));
     EXPECT_FALSE(ranLazy);
 
-    KJ_IF_SOME(v, m) {
+    KJ_IF_MAYBE(v, m) {
       int notUsedForRef = 5;
       const int& ref = m.orDefault([&]() -> int& { return notUsedForRef; });
 
-      EXPECT_EQ(ref, v);
-      EXPECT_EQ(&ref, &v);
+      EXPECT_EQ(ref, *v);
+      EXPECT_EQ(&ref, v);
 
       const int& ref2 = m.orDefault([notUsed = 5]() -> int { return notUsed; });
       EXPECT_NE(&ref, &ref2);
@@ -100,21 +99,21 @@ TEST(Common, Maybe) {
 
   {
     Maybe<Own<CopyOrMove>> m = kj::heap<CopyOrMove>(123);
-    EXPECT_FALSE(m == kj::none);
-    EXPECT_TRUE(m != kj::none);
-    KJ_IF_SOME(v, m) {
-      EXPECT_EQ(123, v->i);
+    EXPECT_FALSE(m == nullptr);
+    EXPECT_TRUE(m != nullptr);
+    KJ_IF_MAYBE(v, m) {
+      EXPECT_EQ(123, (*v)->i);
     } else {
       ADD_FAILURE();
     }
-    KJ_IF_SOME(v, mv(m)) {
-      EXPECT_EQ(123, v->i);
+    KJ_IF_MAYBE(v, mv(m)) {
+      EXPECT_EQ(123, (*v)->i);
     } else {
       ADD_FAILURE();
     }
     // We have moved the kj::Own away, so this should give us the default and leave the Maybe empty.
     EXPECT_EQ(456, m.orDefault(heap<CopyOrMove>(456))->i);
-    EXPECT_TRUE(m == kj::none);
+    EXPECT_TRUE(m == nullptr);
 
     bool ranLazy = false;
     EXPECT_EQ(123, mv(m).orDefault([&] {
@@ -122,17 +121,17 @@ TEST(Common, Maybe) {
       return heap<CopyOrMove>(123);
     })->i);
     EXPECT_TRUE(ranLazy);
-    EXPECT_TRUE(m == kj::none);
+    EXPECT_TRUE(m == nullptr);
 
     m = heap<CopyOrMove>(123);
-    EXPECT_TRUE(m != kj::none);
+    EXPECT_TRUE(m != nullptr);
     ranLazy = false;
     EXPECT_EQ(123, mv(m).orDefault([&] {
       ranLazy = true;
       return heap<CopyOrMove>(456);
     })->i);
     EXPECT_FALSE(ranLazy);
-    EXPECT_TRUE(m == kj::none);
+    EXPECT_TRUE(m == nullptr);
   }
 
   {
@@ -149,15 +148,15 @@ TEST(Common, Maybe) {
 
   {
     Maybe<int> m = 0;
-    EXPECT_FALSE(m == kj::none);
-    EXPECT_TRUE(m != kj::none);
-    KJ_IF_SOME(v, m) {
-      EXPECT_EQ(0, v);
+    EXPECT_FALSE(m == nullptr);
+    EXPECT_TRUE(m != nullptr);
+    KJ_IF_MAYBE(v, m) {
+      EXPECT_EQ(0, *v);
     } else {
       ADD_FAILURE();
     }
-    KJ_IF_SOME(v, mv(m)) {
-      EXPECT_EQ(0, v);
+    KJ_IF_MAYBE(v, mv(m)) {
+      EXPECT_EQ(0, *v);
     } else {
       ADD_FAILURE();
     }
@@ -171,16 +170,16 @@ TEST(Common, Maybe) {
   }
 
   {
-    Maybe<int> m = kj::none;
-    EXPECT_TRUE(m == kj::none);
-    EXPECT_FALSE(m != kj::none);
-    KJ_IF_SOME(v, m) {
+    Maybe<int> m = nullptr;
+    EXPECT_TRUE(m == nullptr);
+    EXPECT_FALSE(m != nullptr);
+    KJ_IF_MAYBE(v, m) {
       ADD_FAILURE();
-      EXPECT_EQ(0, v);  // avoid unused warning
+      EXPECT_EQ(0, *v);  // avoid unused warning
     }
-    KJ_IF_SOME(v, mv(m)) {
+    KJ_IF_MAYBE(v, mv(m)) {
       ADD_FAILURE();
-      EXPECT_EQ(0, v);  // avoid unused warning
+      EXPECT_EQ(0, *v);  // avoid unused warning
     }
     EXPECT_EQ(456, m.orDefault(456));
     bool ranLazy = false;
@@ -194,15 +193,15 @@ TEST(Common, Maybe) {
   int i = 234;
   {
     Maybe<int&> m = i;
-    EXPECT_FALSE(m == kj::none);
-    EXPECT_TRUE(m != kj::none);
-    KJ_IF_SOME(v, m) {
-      EXPECT_EQ(&i, &v);
+    EXPECT_FALSE(m == nullptr);
+    EXPECT_TRUE(m != nullptr);
+    KJ_IF_MAYBE(v, m) {
+      EXPECT_EQ(&i, v);
     } else {
       ADD_FAILURE();
     }
-    KJ_IF_SOME(v, mv(m)) {
-      EXPECT_EQ(&i, &v);
+    KJ_IF_MAYBE(v, mv(m)) {
+      EXPECT_EQ(&i, v);
     } else {
       ADD_FAILURE();
     }
@@ -210,31 +209,31 @@ TEST(Common, Maybe) {
   }
 
   {
-    Maybe<int&> m = kj::none;
-    EXPECT_TRUE(m == kj::none);
-    EXPECT_FALSE(m != kj::none);
-    KJ_IF_SOME(v, m) {
+    Maybe<int&> m = nullptr;
+    EXPECT_TRUE(m == nullptr);
+    EXPECT_FALSE(m != nullptr);
+    KJ_IF_MAYBE(v, m) {
       ADD_FAILURE();
-      EXPECT_EQ(0, v);  // avoid unused warning
+      EXPECT_EQ(0, *v);  // avoid unused warning
     }
-    KJ_IF_SOME(v, mv(m)) {
+    KJ_IF_MAYBE(v, mv(m)) {
       ADD_FAILURE();
-      EXPECT_EQ(0, v);  // avoid unused warning
+      EXPECT_EQ(0, *v);  // avoid unused warning
     }
     EXPECT_EQ(456, m.orDefault(456));
   }
 
   {
     Maybe<int&> m = &i;
-    EXPECT_FALSE(m == kj::none);
-    EXPECT_TRUE(m != kj::none);
-    KJ_IF_SOME(v, m) {
-      EXPECT_EQ(&i, &v);
+    EXPECT_FALSE(m == nullptr);
+    EXPECT_TRUE(m != nullptr);
+    KJ_IF_MAYBE(v, m) {
+      EXPECT_EQ(&i, v);
     } else {
       ADD_FAILURE();
     }
-    KJ_IF_SOME(v, mv(m)) {
-      EXPECT_EQ(&i, &v);
+    KJ_IF_MAYBE(v, mv(m)) {
+      EXPECT_EQ(&i, v);
     } else {
       ADD_FAILURE();
     }
@@ -244,15 +243,15 @@ TEST(Common, Maybe) {
   {
     const Maybe<int&> m2 = &i;
     Maybe<const int&> m = m2;
-    EXPECT_FALSE(m == kj::none);
-    EXPECT_TRUE(m != kj::none);
-    KJ_IF_SOME(v, m) {
-      EXPECT_EQ(&i, &v);
+    EXPECT_FALSE(m == nullptr);
+    EXPECT_TRUE(m != nullptr);
+    KJ_IF_MAYBE(v, m) {
+      EXPECT_EQ(&i, v);
     } else {
       ADD_FAILURE();
     }
-    KJ_IF_SOME(v, mv(m)) {
-      EXPECT_EQ(&i, &v);
+    KJ_IF_MAYBE(v, mv(m)) {
+      EXPECT_EQ(&i, v);
     } else {
       ADD_FAILURE();
     }
@@ -261,15 +260,15 @@ TEST(Common, Maybe) {
 
   {
     Maybe<int&> m = implicitCast<int*>(nullptr);
-    EXPECT_TRUE(m == kj::none);
-    EXPECT_FALSE(m != kj::none);
-    KJ_IF_SOME(v, m) {
+    EXPECT_TRUE(m == nullptr);
+    EXPECT_FALSE(m != nullptr);
+    KJ_IF_MAYBE(v, m) {
       ADD_FAILURE();
-      EXPECT_EQ(0, v);  // avoid unused warning
+      EXPECT_EQ(0, *v);  // avoid unused warning
     }
-    KJ_IF_SOME(v, mv(m)) {
+    KJ_IF_MAYBE(v, mv(m)) {
       ADD_FAILURE();
-      EXPECT_EQ(0, v);  // avoid unused warning
+      EXPECT_EQ(0, *v);  // avoid unused warning
     }
     EXPECT_EQ(456, m.orDefault(456));
   }
@@ -277,15 +276,15 @@ TEST(Common, Maybe) {
   {
     Maybe<int> mi = i;
     Maybe<int&> m = mi;
-    EXPECT_FALSE(m == kj::none);
-    EXPECT_TRUE(m != kj::none);
-    KJ_IF_SOME(v, m) {
-      EXPECT_EQ(&KJ_ASSERT_NONNULL(mi), &v);
+    EXPECT_FALSE(m == nullptr);
+    EXPECT_TRUE(m != nullptr);
+    KJ_IF_MAYBE(v, m) {
+      EXPECT_EQ(&KJ_ASSERT_NONNULL(mi), v);
     } else {
       ADD_FAILURE();
     }
-    KJ_IF_SOME(v, mv(m)) {
-      EXPECT_EQ(&KJ_ASSERT_NONNULL(mi), &v);
+    KJ_IF_MAYBE(v, mv(m)) {
+      EXPECT_EQ(&KJ_ASSERT_NONNULL(mi), v);
     } else {
       ADD_FAILURE();
     }
@@ -293,26 +292,26 @@ TEST(Common, Maybe) {
   }
 
   {
-    Maybe<int> mi = kj::none;
+    Maybe<int> mi = nullptr;
     Maybe<int&> m = mi;
-    EXPECT_TRUE(m == kj::none);
-    KJ_IF_SOME(v, m) {
-      KJ_FAIL_EXPECT(v);
+    EXPECT_TRUE(m == nullptr);
+    KJ_IF_MAYBE(v, m) {
+      KJ_FAIL_EXPECT(*v);
     }
   }
 
   {
     const Maybe<int> mi = i;
     Maybe<const int&> m = mi;
-    EXPECT_FALSE(m == kj::none);
-    EXPECT_TRUE(m != kj::none);
-    KJ_IF_SOME(v, m) {
-      EXPECT_EQ(&KJ_ASSERT_NONNULL(mi), &v);
+    EXPECT_FALSE(m == nullptr);
+    EXPECT_TRUE(m != nullptr);
+    KJ_IF_MAYBE(v, m) {
+      EXPECT_EQ(&KJ_ASSERT_NONNULL(mi), v);
     } else {
       ADD_FAILURE();
     }
-    KJ_IF_SOME(v, mv(m)) {
-      EXPECT_EQ(&KJ_ASSERT_NONNULL(mi), &v);
+    KJ_IF_MAYBE(v, mv(m)) {
+      EXPECT_EQ(&KJ_ASSERT_NONNULL(mi), v);
     } else {
       ADD_FAILURE();
     }
@@ -320,17 +319,17 @@ TEST(Common, Maybe) {
   }
 
   {
-    const Maybe<int> mi = kj::none;
+    const Maybe<int> mi = nullptr;
     Maybe<const int&> m = mi;
-    EXPECT_TRUE(m == kj::none);
-    KJ_IF_SOME(v, m) {
-      KJ_FAIL_EXPECT(v);
+    EXPECT_TRUE(m == nullptr);
+    KJ_IF_MAYBE(v, m) {
+      KJ_FAIL_EXPECT(*v);
     }
   }
 
   {
     // Verify orDefault() works with move-only types.
-    Maybe<kj::String> m = kj::none;
+    Maybe<kj::String> m = nullptr;
     kj::String s = kj::mv(m).orDefault(kj::str("foo"));
     EXPECT_EQ("foo", s);
     EXPECT_EQ("foo", kj::mv(m).orDefault([] {
@@ -343,13 +342,13 @@ TEST(Common, Maybe) {
     Maybe<ImplicitToInt> m(ImplicitToInt { 123 });
     Maybe<uint> m2(m);
     Maybe<uint> m3(kj::mv(m));
-    KJ_IF_SOME(v, m2) {
-      EXPECT_EQ(123, v);
+    KJ_IF_MAYBE(v, m2) {
+      EXPECT_EQ(123, *v);
     } else {
       ADD_FAILURE();
     }
-    KJ_IF_SOME(v, m3) {
-      EXPECT_EQ(123, v);
+    KJ_IF_MAYBE(v, m3) {
+      EXPECT_EQ(123, *v);
     } else {
       ADD_FAILURE();
     }
@@ -358,11 +357,11 @@ TEST(Common, Maybe) {
   {
     // Test usage of immovable types.
     Maybe<Immovable> m;
-    KJ_EXPECT(m == kj::none);
+    KJ_EXPECT(m == nullptr);
     m.emplace();
-    KJ_EXPECT(m != kj::none);
-    m = kj::none;
-    KJ_EXPECT(m == kj::none);
+    KJ_EXPECT(m != nullptr);
+    m = nullptr;
+    KJ_EXPECT(m == nullptr);
   }
 
   {
@@ -370,7 +369,7 @@ TEST(Common, Maybe) {
     CopyOrMove x(123);
     Maybe<CopyOrMove&> m(x);
     Maybe<CopyOrMove> m2 = kj::mv(m);
-    KJ_EXPECT(m == kj::none);  // m is moved out of and cleared
+    KJ_EXPECT(m == nullptr);  // m is moved out of and cleared
     KJ_EXPECT(x.i == 123);  // but what m *referenced* was not moved out of
     KJ_EXPECT(KJ_ASSERT_NONNULL(m2).i == 123);  // m2 is a copy of what m referenced
   }
@@ -378,51 +377,51 @@ TEST(Common, Maybe) {
   {
     // Test that a moved-out-of Maybe<T> is left empty after move constructor.
     Maybe<int> m = 123;
-    KJ_EXPECT(m != kj::none);
+    KJ_EXPECT(m != nullptr);
 
     Maybe<int> n(kj::mv(m));
-    KJ_EXPECT(m == kj::none);
-    KJ_EXPECT(n != kj::none);
+    KJ_EXPECT(m == nullptr);
+    KJ_EXPECT(n != nullptr);
   }
 
   {
     // Test that a moved-out-of Maybe<T> is left empty after move constructor.
     Maybe<int> m = 123;
-    KJ_EXPECT(m != kj::none);
+    KJ_EXPECT(m != nullptr);
 
     Maybe<int> n = kj::mv(m);
-    KJ_EXPECT(m == kj::none);
-    KJ_EXPECT(n != kj::none);
+    KJ_EXPECT(m == nullptr);
+    KJ_EXPECT(n != nullptr);
   }
 
   {
     // Test that a moved-out-of Maybe<T&> is left empty when moved to a Maybe<T>.
     int x = 123;
     Maybe<int&> m = x;
-    KJ_EXPECT(m != kj::none);
+    KJ_EXPECT(m != nullptr);
 
     Maybe<int> n(kj::mv(m));
-    KJ_EXPECT(m == kj::none);
-    KJ_EXPECT(n != kj::none);
+    KJ_EXPECT(m == nullptr);
+    KJ_EXPECT(n != nullptr);
   }
 
   {
     // Test that a moved-out-of Maybe<T&> is left empty when moved to another Maybe<T&>.
     int x = 123;
     Maybe<int&> m = x;
-    KJ_EXPECT(m != kj::none);
+    KJ_EXPECT(m != nullptr);
 
     Maybe<int&> n(kj::mv(m));
-    KJ_EXPECT(m == kj::none);
-    KJ_EXPECT(n != kj::none);
+    KJ_EXPECT(m == nullptr);
+    KJ_EXPECT(n != nullptr);
   }
 
   {
     Maybe<int> m1 = 123;
     Maybe<int> m2 = 123;
     Maybe<int> m3 = 456;
-    Maybe<int> m4 = kj::none;
-    Maybe<int> m5 = kj::none;
+    Maybe<int> m4 = nullptr;
+    Maybe<int> m5 = nullptr;
 
     KJ_EXPECT(m1 == m2);
     KJ_EXPECT(m1 != m3);
@@ -439,8 +438,8 @@ TEST(Common, MaybeConstness) {
   const Maybe<int&> cmi = mi;
 //  const Maybe<int&> cmi2 = cmi;    // shouldn't compile!  Transitive const violation.
 
-  KJ_IF_SOME(i2, cmi) {
-    EXPECT_EQ(&i, &i2);
+  KJ_IF_MAYBE(i2, cmi) {
+    EXPECT_EQ(&i, i2);
   } else {
     ADD_FAILURE();
   }
@@ -449,8 +448,8 @@ TEST(Common, MaybeConstness) {
   const Maybe<const int&> cmci = mci;
   const Maybe<const int&> cmci2 = cmci;
 
-  KJ_IF_SOME(i2, cmci2) {
-    EXPECT_EQ(&i, &i2);
+  KJ_IF_MAYBE(i2, cmci2) {
+    EXPECT_EQ(&i, i2);
   } else {
     ADD_FAILURE();
   }
@@ -466,7 +465,7 @@ TEST(Common, MaybeUnwrapOrReturn) {
     };
 
     KJ_EXPECT(func(123) == 125);
-    KJ_EXPECT(func(kj::none) == -1);
+    KJ_EXPECT(func(nullptr) == -1);
   }
 
   {
@@ -476,7 +475,7 @@ TEST(Common, MaybeUnwrapOrReturn) {
     };
 
     KJ_EXPECT(func(kj::str("123")) == 123);
-    KJ_EXPECT(func(kj::none) == -1);
+    KJ_EXPECT(func(nullptr) == -1);
   }
 
   // Test void return.
@@ -489,7 +488,7 @@ TEST(Common, MaybeUnwrapOrReturn) {
     func(123);
     KJ_EXPECT(val == 123);
     val = 321;
-    func(kj::none);
+    func(nullptr);
     KJ_EXPECT(val == 321);
   }
 
@@ -507,7 +506,7 @@ TEST(Common, MaybeUnwrapOrReturn) {
 
     KJ_EXPECT(func(123) == 125);
     KJ_EXPECT(!wasNull);
-    KJ_EXPECT(func(kj::none) == -1);
+    KJ_EXPECT(func(nullptr) == -1);
     KJ_EXPECT(wasNull);
   }
 
@@ -523,7 +522,7 @@ TEST(Common, MaybeUnwrapOrReturn) {
 
     KJ_EXPECT(func(kj::str("123")) == 123);
     KJ_EXPECT(!wasNull);
-    KJ_EXPECT(func(kj::none) == -1);
+    KJ_EXPECT(func(nullptr) == -1);
     KJ_EXPECT(wasNull);
   }
 
@@ -539,7 +538,7 @@ TEST(Common, MaybeUnwrapOrReturn) {
     func(123);
     KJ_EXPECT(val == 123);
     val = 321;
-    func(kj::none);
+    func(nullptr);
     KJ_EXPECT(val == 321);
   }
 
@@ -574,19 +573,19 @@ TEST(Common, Downcast) {
 
   EXPECT_EQ(&bar, &downcast<Bar>(foo));
 #if defined(KJ_DEBUG) && !KJ_NO_RTTI
-  KJ_EXPECT_THROW_MESSAGE("Value cannot be downcast", (void)downcast<Baz>(foo));
+  KJ_EXPECT_THROW_MESSAGE("Value cannot be downcast", downcast<Baz>(foo));
 #endif
 
 #if KJ_NO_RTTI
-  EXPECT_TRUE(dynamicDowncastIfAvailable<Bar>(foo) == kj::none);
-  EXPECT_TRUE(dynamicDowncastIfAvailable<Baz>(foo) == kj::none);
+  EXPECT_TRUE(dynamicDowncastIfAvailable<Bar>(foo) == nullptr);
+  EXPECT_TRUE(dynamicDowncastIfAvailable<Baz>(foo) == nullptr);
 #else
-  KJ_IF_SOME(m, dynamicDowncastIfAvailable<Bar>(foo)) {
-    EXPECT_EQ(&bar, &m);
+  KJ_IF_MAYBE(m, dynamicDowncastIfAvailable<Bar>(foo)) {
+    EXPECT_EQ(&bar, m);
   } else {
     KJ_FAIL_ASSERT("Dynamic downcast returned null.");
   }
-  EXPECT_TRUE(dynamicDowncastIfAvailable<Baz>(foo) == kj::none);
+  EXPECT_TRUE(dynamicDowncastIfAvailable<Baz>(foo) == nullptr);
 #endif
 }
 
@@ -793,216 +792,29 @@ TEST(Common, ArrayAsBytes) {
   }
 }
 
-enum TestOrdering {
-  UNORDERED,
-  EQUAL,
-  LESS,
-  GREATER,
-  NOTEQUAL,
-};
+KJ_TEST("ArrayPtr operator ==") {
+  KJ_EXPECT(ArrayPtr<const int>({123, 456}) == ArrayPtr<const int>({123, 456}));
+  KJ_EXPECT(!(ArrayPtr<const int>({123, 456}) != ArrayPtr<const int>({123, 456})));
+  KJ_EXPECT(ArrayPtr<const int>({123, 456}) != ArrayPtr<const int>({123, 321}));
+  KJ_EXPECT(ArrayPtr<const int>({123, 456}) != ArrayPtr<const int>({123}));
 
-template<typename A, typename B>
-void verifyEqualityComparisons(A a, B b, TestOrdering ord) {
-  const bool expectedEq = ord == EQUAL;
-  KJ_EXPECT((a == b) == expectedEq);
-  KJ_EXPECT((b == a) == expectedEq);
-  KJ_EXPECT((a != b) == !expectedEq);
-  KJ_EXPECT((b != a) == !expectedEq);
-}
+  KJ_EXPECT(ArrayPtr<const int>({123, 456}) == ArrayPtr<const short>({123, 456}));
+  KJ_EXPECT(!(ArrayPtr<const int>({123, 456}) != ArrayPtr<const short>({123, 456})));
+  KJ_EXPECT(ArrayPtr<const int>({123, 456}) != ArrayPtr<const short>({123, 321}));
+  KJ_EXPECT(ArrayPtr<const int>({123, 456}) != ArrayPtr<const short>({123}));
 
-template<typename T>
-void strongComparisonsTests(T a, T b, TestOrdering ord) {
-  const bool expectedEq = ord == EQUAL;
-  const bool expectedLT = ord == LESS;
-  verifyEqualityComparisons(a, b, ord);
-  KJ_EXPECT((a <= b) == (expectedEq || expectedLT));
-  KJ_EXPECT((b <= a) == !expectedLT);
-  KJ_EXPECT((a >= b) == !expectedLT);
-  KJ_EXPECT((b >= a) == (expectedEq || expectedLT));
-  KJ_EXPECT((a < b) == expectedLT);
-  KJ_EXPECT((b < a) == !(expectedEq || expectedLT));
-  KJ_EXPECT((a > b) == !(expectedEq || expectedLT));
-  KJ_EXPECT((b > a) == expectedLT);
-}
+  KJ_EXPECT((ArrayPtr<const StringPtr>({"foo", "bar"}) ==
+             ArrayPtr<const char* const>({"foo", "bar"})));
+  KJ_EXPECT(!(ArrayPtr<const StringPtr>({"foo", "bar"}) !=
+             ArrayPtr<const char* const>({"foo", "bar"})));
+  KJ_EXPECT((ArrayPtr<const StringPtr>({"foo", "bar"}) !=
+             ArrayPtr<const char* const>({"foo", "baz"})));
+  KJ_EXPECT((ArrayPtr<const StringPtr>({"foo", "bar"}) !=
+             ArrayPtr<const char* const>({"foo"})));
 
-template<typename A, typename B>
-struct ArrayComparisonTest {
-  Array<A> left;
-  Array<B> right;
-  TestOrdering expectedResult;
-  ArrayComparisonTest(std::initializer_list<A> left, std::initializer_list<B> right, TestOrdering expectedResult) :
-    left(heapArray(left)), right(heapArray(right)), expectedResult(expectedResult) {}
-
-  template<size_t N, size_t M>
-  ArrayComparisonTest(A (&left) [N], B(&right) [M], TestOrdering expectedResult) :
-    left(heapArray(left, N)), right(heapArray(right, M)), expectedResult(expectedResult) {}
-
-};
-
-KJ_TEST("ArrayPtr comparators for nullptr type") {
-  verifyEqualityComparisons(ArrayPtr<const int>({}), nullptr, EQUAL);
-  verifyEqualityComparisons(ArrayPtr<const int>({123}), nullptr, GREATER);
-}
-
-KJ_TEST("ArrayPtr comparators for same int type") {
-  using Test = ArrayComparisonTest<const int, const int>;
-  Test testCases[] = {
-    {{1,2}, {1,2}, EQUAL},
-    {{1,2}, {1,3}, LESS},
-    {{1,3}, {1,2}, GREATER},
-    {{1}  , {1,2}, LESS},
-    {{2}  , {1,2}, GREATER},
-    {{257,258}, {257,258}, EQUAL},
-    {{0xFF,0xFF}, {0x101,0xFF}, LESS},
-    {{0xFF,0x101}, {0xFF,0xFF}, GREATER},
-    {{0xFF}  , {0xFF,0x101}, LESS},
-    {{0x101}  , {0xFF,0x101}, GREATER},
-    {{-1,-2}, {-1,-2}, EQUAL},
-    {{-1,-3}, {-1,-2}, LESS},
-    {{-1,-2}, {-1,-3}, GREATER},
-    {{-1}  , {-1,-2}, LESS},
-    {{-1}  , {-2,-3}, GREATER},
-    {{-1,1}, {-1,1}, EQUAL},
-    {{-1,-1}, {-1,1}, LESS},
-    {{-1,1}, {-1,-1}, GREATER},
-    {{-1}  , {1,-2}, LESS},
-    {{1}  , {-1,2}, GREATER},
-  };
-
-  for (auto const& testCase : testCases) {
-    strongComparisonsTests(testCase.left.asPtr(), testCase.right.asPtr(), testCase.expectedResult);
-  }
-}
-KJ_TEST("ArrayPtr comparators for same int type") {
-  using Test = ArrayComparisonTest<const unsigned int, const unsigned int>;
-  Test testCases[] = {
-    {{1,2}, {1,2}, EQUAL},
-    {{1,2}, {1,3}, LESS},
-    {{1,3}, {1,2}, GREATER},
-    {{1}  , {1,2}, LESS},
-    {{2}  , {1,2}, GREATER},
-    {{257,258}, {257,258}, EQUAL},
-    {{0xFF,0xFF}, {0x101,0xFF}, LESS},
-    {{0xFF,0x101}, {0xFF,0xFF}, GREATER},
-    {{0xFF}  , {0xFF,0x101}, LESS},
-    {{0x101}  , {0xFF,0x101}, GREATER},
-    {{0x101}  , {0xFF}, GREATER},
-  };
-
-  for (auto const& testCase : testCases) {
-    strongComparisonsTests(testCase.left.asPtr(), testCase.right.asPtr(), testCase.expectedResult);
-  }
-}
-
-KJ_TEST("ArrayPtr equality comparisons for different int type") {
-  using Test = ArrayComparisonTest<const int, const short>;
-  Test testCases[] = {
-    {{1,2}, {1,2}, EQUAL},
-    {{1,2}, {1,3}, LESS},
-    {{1,3}, {1,2}, GREATER},
-    {{1}  , {1,2}, LESS},
-    {{2}  , {1,2}, GREATER},
-  };
-
-  for (auto const& testCase : testCases) {
-    verifyEqualityComparisons(testCase.left.asPtr(), testCase.right.asPtr(), testCase.expectedResult);
-  }
-}
-
-KJ_TEST("ArrayPtr comparators for doubles (testing partial orderings)") {
-  using Test = ArrayComparisonTest<const double, const double>;
-  const double d = nan();
-  Test testCases[] = {
-    {{0.0}, {0.0}, EQUAL},
-    {{1.0}, {0.0}, NOTEQUAL},
-    {{0.0}, {1.0}, NOTEQUAL},
-    {{0,0, 0.0}, {0.0}, NOTEQUAL},
-    {{0.0, 0.0}, {1.0}, NOTEQUAL},
-    {{d}, {d}, UNORDERED},
-  };
-
-  for (auto const& testCase : testCases) {
-    verifyEqualityComparisons(testCase.left.asPtr(), testCase.right.asPtr(), testCase.expectedResult);
-  }
-}
-
-KJ_TEST("ArrayPtr comparator for arrays of the same string type") {
-  using TestCase = ArrayComparisonTest<const StringPtr, const StringPtr>;
-  TestCase testCases[] = {
-    {{"foo", "bar"}, {"foo", "bar"}, EQUAL},
-    {{"foo", "bar"}, {"foo", "baz"}, LESS},
-    {{"foo", "bar"}, {"foo"       }, GREATER},
-  };
-
-  for (auto const& testCase : testCases) {
-    strongComparisonsTests(testCase.left.asPtr(), testCase.right.asPtr(), testCase.expectedResult);
-  }
-}
-
-KJ_TEST("ArrayPtr equality comparisons for UTF-8") {
-  using TestCase = ArrayComparisonTest<const char, const char>;
-
-  TestCase testCases[] = {
-    {"hello", "żółć", LESS},
-  };
-
-  for (auto const& testCase : testCases) {
-    strongComparisonsTests(testCase.left.asPtr(), testCase.right.asPtr(), testCase.expectedResult);
-    strongComparisonsTests(testCase.left.asBytes(), testCase.right.asBytes(), testCase.expectedResult);
-  }
-}
-
-KJ_TEST("ArrayPtr equality for arrays of different string types") {
-  using Test = ArrayComparisonTest<const StringPtr, const char* const>;
-  Test testCases[] = {
-    {{"foo", "bar"}, {"foo", "bar"}, EQUAL},
-    {{"foo", "bar"}, {"foo", "baz"}, LESS},
-    {{"foo", "bar"}, {"foo"       }, GREATER},
-  };
-
-  for (auto const& testCase : testCases) {
-    verifyEqualityComparisons(testCase.left.asPtr(), testCase.right.asPtr(), testCase.expectedResult);
-  }
-}
-
-KJ_TEST("asBytes Tests") {
-  const char helloMessage[] = "helloThere";
-
-  // Use size to specify
-  {
-    auto helloPtr = kj::asBytes(helloMessage, 5);
-    static_assert(isSameType<decltype(helloPtr), ArrayPtr<const byte>>());
-    KJ_EXPECT(helloPtr.size(), 5);
-    KJ_EXPECT(memcmp(helloPtr.begin(), helloMessage, 5) == 0);
-  }
-
-  // Use begin and end
-  {
-    auto helloPtr = kj::asBytes(helloMessage, helloMessage + 5);
-    static_assert(isSameType<decltype(helloPtr), ArrayPtr<const byte>>());
-    KJ_EXPECT(helloPtr.size(), 5);
-    KJ_EXPECT(memcmp(helloPtr.begin(), helloMessage, 5) == 0);
-  }
-
-  // Check struct to ArrayPtr<byte>
-  {
-    struct Foo {
-      size_t i = 0;
-      size_t j = 1;
-    };
-    const Foo foo {};
-    auto fooBytesPtr = asBytes(foo);
-    static_assert(isSameType<decltype(fooBytesPtr), ArrayPtr<const byte>>());
-    KJ_EXPECT(fooBytesPtr.size(), sizeof(Foo));
-    KJ_EXPECT(memcmp(fooBytesPtr.begin(), &foo, sizeof(Foo)) == 0);
-  }
-  {
-    const int simpleInts[] = {0, 100, 200, 300, -100};
-    auto simpleIntsPtr = asBytes(simpleInts);
-    static_assert(isSameType<decltype(simpleIntsPtr), ArrayPtr<const byte>>());
-    KJ_EXPECT(simpleIntsPtr.size(), sizeof(simpleInts));
-    KJ_EXPECT(memcmp(simpleIntsPtr.begin(), simpleInts, sizeof(simpleInts)) == 0);
-  }
+  // operator== should not use memcmp for double elements.
+  double d[1] = { nan() };
+  KJ_EXPECT(ArrayPtr<double>(d, 1) != ArrayPtr<double>(d, 1));
 }
 
 KJ_TEST("kj::range()") {
@@ -1111,168 +923,6 @@ KJ_TEST("kj::ArrayPtr startsWith / endsWith / findFirst / findLast") {
   KJ_EXPECT(arr.findLast(34).orDefault(100) == 3);
   KJ_EXPECT(arr.findLast(56).orDefault(100) == 2);
   KJ_EXPECT(arr.findLast(78).orDefault(100) == 100);
-}
-
-KJ_TEST("kj::ArrayPtr fill") {
-  int64_t int64Array[] = {12, 34, 56, 34, 12};
-  arrayPtr(int64Array).fill(42);
-  for (auto i: int64Array) {
-    KJ_EXPECT(i == 42);
-  }
-
-  // test small sizes separately, since compilers do a memset optimization
-  byte byteArray[256]{};
-  arrayPtr(byteArray).fill(42);
-  for (auto b: byteArray) {
-    KJ_EXPECT(b == 42);
-  }
-
-  // test an object
-  struct SomeObject {
-    int64_t i;
-    double d;
-  };
-  SomeObject objs[256];
-  arrayPtr(objs).fill(SomeObject{42, 3.1415926});
-  for (auto& o: objs) {
-    KJ_EXPECT(o.i == 42);
-    KJ_EXPECT(o.d == 3.1415926);
-  }
-
-  // test filling from an Array
-  byte byteArray2[10]{};
-  auto source = "abc"_kjb;
-  arrayPtr(byteArray2).fill(source);
-  KJ_EXPECT("abcabcabca"_kjb == byteArray2);
-}
-
-struct Std {
-  template<typename T>
-  static std::span<T> from(ArrayPtr<T>* arr) {
-    return std::span<T>(arr->begin(), arr->size());
-  }
-};
-
-KJ_TEST("ArrayPtr::as<Std>") {
-  int rawArray[] = {12, 34, 56, 34, 12};
-  ArrayPtr<int> arr(rawArray);
-  std::span<int> stdPtr = arr.as<Std>();
-  KJ_EXPECT(stdPtr.size() == 5);
-}
-
-KJ_TEST("ArrayPtr::copyFrom") {
-  int arr1[] = {12, 34, 56, 34, 12};
-  int arr2[] = {98, 67, 9, 22, 107};
-  int arr3[] = {98, 67, 9, 22, 107};
-
-  KJ_EXPECT(arrayPtr(arr1) != arrayPtr(arr2));
-  KJ_EXPECT(arrayPtr(arr2) == arrayPtr(arr3));
-
-  arrayPtr(arr1).copyFrom(arr2);
-  KJ_EXPECT(arrayPtr(arr1) == arrayPtr(arr2));
-  KJ_EXPECT(arrayPtr(arr2) == arrayPtr(arr3));
-}
-
-// Verifies the expected values of kj::isDisallowedInCoroutine<T>
-
-struct DisallowedInCoroutineStruct {
-  KJ_DISALLOW_AS_COROUTINE_PARAM;
-};
-class DisallowedInCoroutinePublic {
-public:
-  KJ_DISALLOW_AS_COROUTINE_PARAM;
-};
-class DisallowedInCoroutinePrivate {
-private:
-  KJ_DISALLOW_AS_COROUTINE_PARAM;
-};
-struct AllowedInCoroutine {};
-
-static_assert(_::isDisallowedInCoroutine<DisallowedInCoroutineStruct>());
-static_assert(_::isDisallowedInCoroutine<DisallowedInCoroutineStruct&>());
-static_assert(_::isDisallowedInCoroutine<DisallowedInCoroutineStruct*>());
-static_assert(_::isDisallowedInCoroutine<DisallowedInCoroutinePublic>());
-static_assert(_::isDisallowedInCoroutine<DisallowedInCoroutinePublic&>());
-static_assert(_::isDisallowedInCoroutine<DisallowedInCoroutinePublic*>());
-static_assert(_::isDisallowedInCoroutine<DisallowedInCoroutinePrivate>());
-static_assert(_::isDisallowedInCoroutine<DisallowedInCoroutinePrivate&>());
-static_assert(_::isDisallowedInCoroutine<DisallowedInCoroutinePrivate*>());
-static_assert(!_::isDisallowedInCoroutine<AllowedInCoroutine>());
-static_assert(!_::isDisallowedInCoroutine<AllowedInCoroutine&>());
-static_assert(!_::isDisallowedInCoroutine<AllowedInCoroutine*>());
-
-KJ_TEST("_kjb") {
-  {
-    ArrayPtr<const byte> arr = "abc"_kjb;
-    KJ_EXPECT(arr.size() == 3);
-    KJ_EXPECT(arr[0] == 'a');
-    KJ_EXPECT(arr[1] == 'b');
-    KJ_EXPECT(arr[2] == 'c');
-    KJ_EXPECT(arr == "abc"_kjb);
-  }
-
-  {
-      // _kjb literals can be constexpr too
-    constexpr ArrayPtr<const byte> arr2 = "def"_kjb;
-    KJ_EXPECT(arr2.size() == 3);
-    KJ_EXPECT(arr2[0] == 'd');
-    KJ_EXPECT(arr2[1] == 'e');
-    KJ_EXPECT(arr2[2] == 'f');
-    KJ_EXPECT(arr2 == "def"_kjb);
-  }
-
-  // empty array
-  KJ_EXPECT(""_kjb.size() == 0);
-  KJ_EXPECT(""_kjb == nullptr);
-}
-
-KJ_TEST("arrayPtr()") {
-  // arrayPtr can be used to create ArrayPtr from a fixed-size array without spelling out types
-  byte buffer[1024]{};
-  auto ptr = arrayPtr(buffer);
-  KJ_EXPECT(ptr.size() == 1024);
-}
-
-KJ_TEST("single item arrayPtr()") {
-  byte b = 42;
-  KJ_EXPECT(arrayPtr(b).size() == 1);
-  KJ_EXPECT(arrayPtr(b).begin() == &b);
-
-  // test an object
-  struct SomeObject {
-    int64_t i;
-    double d;
-  };
-  SomeObject obj = {42, 3.1415};
-  kj::arrayPtr(obj).asBytes().fill(0);
-  KJ_EXPECT(obj.i == 0);
-  KJ_EXPECT(obj.d == 0);
-}
-
-KJ_TEST("memzero<T>()") {
-  // memzero() works for primitive types
-  int64_t x = 42;
-  memzero(x);
-  KJ_EXPECT(x == 0);
-
-  // memzero() works for trivially constructible types
-  struct ZeroTest {
-    int64_t x;
-    double pi;
-  };
-  ZeroTest t1;
-
-  memzero(t1);
-  KJ_EXPECT(t1.x == 0);
-  KJ_EXPECT(t1.pi == 0.0);
-
-  // memzero works on statically-sized arrays
-  ZeroTest arr[256];
-  memset(arr, 0xff, 256 * sizeof(ZeroTest));
-  memzero(arr);
-  for (auto& t: arr) {
-    KJ_EXPECT(t.pi == 0);
-  }
 }
 
 }  // namespace

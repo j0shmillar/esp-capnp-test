@@ -59,7 +59,29 @@
 #endif
 
 namespace kj {
-#ifdef KJ_USE_FUTEX
+#if KJ_TRACK_LOCK_BLOCKING
+static thread_local const BlockedOnReason* tlsBlockReason __attribute((tls_model("initial-exec")));
+// The initial-exec model ensures that even if this code is part of a shared library built PIC, then
+// we still place this variable in the appropriate ELF section so that __tls_get_addr is avoided.
+// It's unclear if __tls_get_addr is still not async signal safe in glibc. The only negative
+// downside of this approach is that a shared library built with kj & lock tracking will fail if
+// dlopen'ed which isn't an intended use-case for the initial implementation.
+
+Maybe<const BlockedOnReason&> blockedReason() noexcept {
+  if (tlsBlockReason == nullptr) {
+    return nullptr;
+  }
+  return *tlsBlockReason;
+}
+
+static void setCurrentThreadIsWaitingFor(const BlockedOnReason* meta) {
+  tlsBlockReason = meta;
+}
+
+static void setCurrentThreadIsNoLongerWaiting() {
+  tlsBlockReason = nullptr;
+}
+#elif KJ_USE_FUTEX
 struct BlockedOnMutexAcquisition {
   constexpr BlockedOnMutexAcquisition(const _::Mutex& mutex, LockSourceLocationArg) {}
 };
@@ -103,8 +125,8 @@ inline void Mutex::removeWaiter(Waiter& waiter) {
   assertLockedByCaller(EXCLUSIVE);
 #endif
   *waiter.prev = waiter.next;
-  KJ_IF_SOME(next, waiter.next) {
-    next.prev = waiter.prev;
+  KJ_IF_MAYBE(next, waiter.next) {
+    next->prev = waiter.prev;
   } else {
     KJ_DASSERT(waitersTail == &waiter.next);
     waitersTail = waiter.prev;
@@ -116,15 +138,15 @@ bool Mutex::checkPredicate(Waiter& waiter) {
   // signal the waiting thread. This is not only when the predicate passes, but also when it
   // throws, in which case we want to propagate the exception to the waiting thread.
 
-  if (waiter.exception != kj::none) return true;  // don't run again after an exception
+  if (waiter.exception != nullptr) return true;  // don't run again after an exception
 
   bool result = false;
-  KJ_IF_SOME(exception, kj::runCatchingExceptions([&]() {
+  KJ_IF_MAYBE(exception, kj::runCatchingExceptions([&]() {
     result = waiter.predicate.check();
   })) {
     // Exception thrown.
     result = true;
-    waiter.exception = kj::heap(kj::mv(exception));
+    waiter.exception = kj::heap(kj::mv(*exception));
   };
   return result;
 }
@@ -157,6 +179,33 @@ struct timespec toAbsoluteTimespec(TimePoint time) {
 // =======================================================================================
 // Futex-based implementation (Linux-only)
 
+#if KJ_SAVE_ACQUIRED_LOCK_INFO
+#if !__GLIBC_PREREQ(2, 30)
+#ifndef SYS_gettid
+#error SYS_gettid is unavailable on this system
+#endif
+
+#define gettid() ((pid_t)syscall(SYS_gettid))
+#endif
+
+static thread_local pid_t tlsTid = gettid();
+#define TRACK_ACQUIRED_TID() tlsTid
+
+Mutex::AcquiredMetadata Mutex::lockedInfo() const {
+  auto state = __atomic_load_n(&futex, __ATOMIC_RELAXED);
+  auto tid = lockedExclusivelyByThread;
+  auto location = lockAcquiredLocation;
+
+  if (state & EXCLUSIVE_HELD) {
+    return HoldingExclusively{tid, location};
+  } else {
+    return HoldingShared{location};
+  }
+}
+
+#else
+#define TRACK_ACQUIRED_TID() 0
+#endif
 
 Mutex::Mutex(): futex(0) {}
 Mutex::~Mutex() {
@@ -170,8 +219,8 @@ bool Mutex::lock(Exclusivity exclusivity, Maybe<Duration> timeout, LockSourceLoc
 
   auto spec = timeout.map([](Duration d) { return toRelativeTimespec(d); });
   struct timespec* specp = nullptr;
-  KJ_IF_SOME(s, spec) {
-    specp = &s;
+  KJ_IF_MAYBE(s, spec) {
+    specp = s;
   }
 
   switch (exclusivity) {
@@ -208,6 +257,7 @@ bool Mutex::lock(Exclusivity exclusivity, Maybe<Duration> timeout, LockSourceLoc
           }
         }
       }
+      acquiredExclusive(TRACK_ACQUIRED_TID(), location);
 #if KJ_CONTENTION_WARNING_THRESHOLD
       printContendedReader = false;
 #endif
@@ -226,7 +276,7 @@ bool Mutex::lock(Exclusivity exclusivity, Maybe<Duration> timeout, LockSourceLoc
         }
 
 #if KJ_CONTENTION_WARNING_THRESHOLD
-        if (contentionWaitStart == kj::none) {
+        if (contentionWaitStart == nullptr) {
           // We could have the exclusive mutex tell us how long it was holding the lock. That would
           // be the nicest. However, I'm hesitant to bloat the structure. I suspect having a reader
           // tell us how long it was waiting for is probably a good proxy.
@@ -262,17 +312,29 @@ bool Mutex::lock(Exclusivity exclusivity, Maybe<Duration> timeout, LockSourceLoc
       }
 
 #ifdef KJ_CONTENTION_WARNING_THRESHOLD
-      KJ_IF_SOME(start, contentionWaitStart) {
+      KJ_IF_MAYBE(start, contentionWaitStart) {
         if (__atomic_load_n(&printContendedReader, __ATOMIC_RELAXED)) {
           // Double-checked lock avoids the CPU needing to acquire the lock in most cases.
           if (__atomic_exchange_n(&printContendedReader, false, __ATOMIC_RELAXED)) {
-            auto contentionDuration = kj::systemPreciseMonotonicClock().now() - start;
+            auto contentionDuration = kj::systemPreciseMonotonicClock().now() - *start;
             KJ_LOG(WARNING, "Acquired contended lock", location, contentionDuration,
                 kj::getStackTrace());
           }
         }
       }
 #endif
+
+      // We just want to record the lock being acquired somewhere but the specific location doesn't
+      // matter. This does mean that race conditions could occur where a thread might read this
+      // inconsistently (e.g. filename from 1 lock & function from another). This currently is just
+      // meant to be a debugging aid for manual analysis so it's OK for that purpose. If it's ever
+      // required for this to be used for anything else, then this should probably be changed to
+      // use an additional atomic variable that can ensure only one writer updates this. Or use the
+      // futex variable to ensure that this is only done for the first one to acquire the lock,
+      // although there may be thundering herd problems with that whereby there's a long wallclock
+      // time between when the lock is acquired and when the location is updated (since the first
+      // locker isn't really guaranteed to be the first one unlocked).
+      acquiredShared(location);
 
       break;
     }
@@ -293,16 +355,16 @@ void Mutex::unlock(Exclusivity exclusivity, Waiter* waiterToSkip) {
       // exclusive lock since under a shared lock the state couldn't have changed.
       auto nextWaiter = waitersHead;
       for (;;) {
-        KJ_IF_SOME(waiter, nextWaiter) {
-          nextWaiter = waiter.next;
+        KJ_IF_MAYBE(waiter, nextWaiter) {
+          nextWaiter = waiter->next;
 
-          if (&waiter != waiterToSkip && checkPredicate(waiter)) {
+          if (waiter != waiterToSkip && checkPredicate(*waiter)) {
             // This waiter's predicate now evaluates true, so wake it up.
-            if (waiter.hasTimeout) {
+            if (waiter->hasTimeout) {
               // In this case we need to be careful to make sure the target thread isn't already
               // processing a timeout, so we need to do an atomic CAS rather than just a store.
               uint expected = 0;
-              if (__atomic_compare_exchange_n(&waiter.futex, &expected, 1, false,
+              if (__atomic_compare_exchange_n(&waiter->futex, &expected, 1, false,
                                               __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
                 // Good, we set it to 1, transferring ownership of the mutex. Continue on below.
               } else {
@@ -318,9 +380,9 @@ void Mutex::unlock(Exclusivity exclusivity, Waiter* waiterToSkip) {
                 continue;
               }
             } else {
-              __atomic_store_n(&waiter.futex, 1, __ATOMIC_RELEASE);
+              __atomic_store_n(&waiter->futex, 1, __ATOMIC_RELEASE);
             }
-            syscall(SYS_futex, &waiter.futex, FUTEX_WAKE_PRIVATE, INT_MAX, nullptr, nullptr, 0);
+            syscall(SYS_futex, &waiter->futex, FUTEX_WAKE_PRIVATE, INT_MAX, nullptr, nullptr, 0);
 
             // We transferred ownership of the lock to this waiter, so we're done now.
             return;
@@ -398,7 +460,7 @@ void Mutex::assertLockedByCaller(Exclusivity exclusivity) const {
 
 void Mutex::wait(Predicate& predicate, Maybe<Duration> timeout, LockSourceLocationArg location) {
   // Add waiter to list.
-  Waiter waiter { kj::none, waitersTail, predicate, kj::none, 0, timeout != kj::none };
+  Waiter waiter { nullptr, waitersTail, predicate, nullptr, 0, timeout != nullptr };
   addWaiter(waiter);
 
   BlockedOnReason blockReason = BlockedOnCondVarWait{*this, &waiter, location};
@@ -411,7 +473,7 @@ void Mutex::wait(Predicate& predicate, Maybe<Duration> timeout, LockSourceLocati
     // Infinite timeout for re-obtaining the lock is on purpose because the post-condition for this
     // function has to be that the lock state hasn't changed (& we have to be locked when we enter
     // since that's how condvars work).
-    if (!currentlyLocked) lock(EXCLUSIVE, kj::none, location);
+    if (!currentlyLocked) lock(EXCLUSIVE, nullptr, location);
     removeWaiter(waiter);
   });
 
@@ -421,8 +483,8 @@ void Mutex::wait(Predicate& predicate, Maybe<Duration> timeout, LockSourceLocati
 
     struct timespec ts;
     struct timespec* tsp = nullptr;
-    KJ_IF_SOME(t, timeout) {
-      ts = toAbsoluteTimespec(now() + t);
+    KJ_IF_MAYBE(t, timeout) {
+      ts = toAbsoluteTimespec(now() + *t);
       tsp = &ts;
     }
 
@@ -445,14 +507,14 @@ void Mutex::wait(Predicate& predicate, Maybe<Duration> timeout, LockSourceLocati
           // transferred to us from another thread. So, we need to lock it ourselves. But, another
           // thread might be in the process of signaling us and transferring ownership. So, we
           // first must atomically take control of our destiny.
-          KJ_ASSERT(timeout != kj::none);
+          KJ_ASSERT(timeout != nullptr);
           uint expected = 0;
           if (__atomic_compare_exchange_n(&waiter.futex, &expected, 1, false,
                                           __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE)) {
             // OK, we set our own futex to 1. That means no other thread will, and so we won't be
             // receiving a mutex ownership transfer. We have to lock the mutex ourselves.
             setCurrentThreadIsNoLongerWaiting();
-            lock(EXCLUSIVE, kj::none, location);
+            lock(EXCLUSIVE, nullptr, location);
             currentlyLocked = true;
             return;
           } else {
@@ -476,13 +538,13 @@ void Mutex::wait(Predicate& predicate, Maybe<Duration> timeout, LockSourceLocati
         assertLockedByCaller(EXCLUSIVE);
 #endif
 
-        KJ_IF_SOME(exception, waiter.exception) {
+        KJ_IF_MAYBE(exception, waiter.exception) {
           // The predicate threw an exception, apparently. Propagate it.
           // TODO(someday): Could we somehow have this be a recoverable exception? Presumably we'd
           //   then want MutexGuarded::when() to skip calling the callback, but then what should it
           //   return, since it normally returns the callback's result? Or maybe people who disable
           //   exceptions just really should not write predicates that can throw.
-          kj::throwFatalException(kj::mv(*exception));
+          kj::throwFatalException(kj::mv(**exception));
         }
 
         return;
@@ -494,9 +556,9 @@ void Mutex::wait(Predicate& predicate, Maybe<Duration> timeout, LockSourceLocati
 void Mutex::induceSpuriousWakeupForTest() {
   auto nextWaiter = waitersHead;
   for (;;) {
-    KJ_IF_SOME(waiter, nextWaiter) {
-      nextWaiter = waiter.next;
-      syscall(SYS_futex, &waiter.futex, FUTEX_WAKE_PRIVATE, INT_MAX, nullptr, nullptr, 0);
+    KJ_IF_MAYBE(waiter, nextWaiter) {
+      nextWaiter = waiter->next;
+      syscall(SYS_futex, &waiter->futex, FUTEX_WAKE_PRIVATE, INT_MAX, nullptr, nullptr, 0);
     } else {
       // No more waiters.
       break;
@@ -588,7 +650,7 @@ Mutex::Mutex() {
 Mutex::~Mutex() {}
 
 bool Mutex::lock(Exclusivity exclusivity, Maybe<Duration> timeout, NoopSourceLocation) {
-  if (timeout != kj::none) {
+  if (timeout != nullptr) {
     KJ_UNIMPLEMENTED("Locking a mutex with a timeout is only supported on Linux.");
   }
   switch (exclusivity) {
@@ -609,13 +671,13 @@ void Mutex::wakeReadyWaiter(Waiter* waiterToSkip) {
 
   auto nextWaiter = waitersHead;
   for (;;) {
-    KJ_IF_SOME(waiter, nextWaiter) {
-      nextWaiter = waiter.next;
+    KJ_IF_MAYBE(waiter, nextWaiter) {
+      nextWaiter = waiter->next;
 
-      if (&waiter != waiterToSkip && checkPredicate(waiter)) {
+      if (waiter != waiterToSkip && checkPredicate(*waiter)) {
         // This waiter's predicate now evaluates true, so wake it up. It doesn't matter if we
         // use Wake vs. WakeAll here since there's always only one thread waiting.
-        WakeConditionVariable(&coercedCondvar(waiter.condvar));
+        WakeConditionVariable(&coercedCondvar(waiter->condvar));
 
         // We only need to wake one waiter. Note that unlike the futex-based implementation, we
         // cannot "transfer ownership" of the lock to the waiter, therefore we cannot guarantee
@@ -658,7 +720,7 @@ void Mutex::assertLockedByCaller(Exclusivity exclusivity) const {
 
 void Mutex::wait(Predicate& predicate, Maybe<Duration> timeout, NoopSourceLocation) {
   // Add waiter to list.
-  Waiter waiter { kj::none, waitersTail, predicate, kj::none, 0 };
+  Waiter waiter { nullptr, waitersTail, predicate, nullptr, 0 };
   static_assert(sizeof(waiter.condvar) == sizeof(CONDITION_VARIABLE),
                 "CONDITION_VARIABLE is not a pointer?");
   InitializeConditionVariable(&coercedCondvar(waiter.condvar));
@@ -672,22 +734,22 @@ void Mutex::wait(Predicate& predicate, Maybe<Duration> timeout, NoopSourceLocati
   const MonotonicClock* clock = nullptr;
   kj::Maybe<kj::TimePoint> endTime;
 
-  KJ_IF_SOME(t, timeout) {
+  KJ_IF_MAYBE(t, timeout) {
     // Windows sleeps are inaccurate -- they can be longer *or shorter* than the requested amount.
     // For many use cases of our API, a too-short sleep would be unacceptable. Experimentally, it
     // seems like sleeps can be up to half a millisecond short, so we'll add half a millisecond
     // (and then we round up, below).
-    t += 500 * kj::MICROSECONDS;
+    *t += 500 * kj::MICROSECONDS;
 
     // Compute initial sleep time.
-    sleepMs = t / kj::MILLISECONDS;
-    if (t % kj::MILLISECONDS > 0 * kj::SECONDS) {
+    sleepMs = *t / kj::MILLISECONDS;
+    if (*t % kj::MILLISECONDS > 0 * kj::SECONDS) {
       // We guarantee we won't wake up too early.
       ++sleepMs;
     }
 
     clock = &systemPreciseMonotonicClock();
-    endTime = clock->now() + t;
+    endTime = clock->now() + *t;
   } else {
     sleepMs = INFINITE;
   }
@@ -709,21 +771,21 @@ void Mutex::wait(Predicate& predicate, Maybe<Duration> timeout, NoopSourceLocati
       }
     }
 
-    KJ_IF_SOME(exception, waiter.exception) {
+    KJ_IF_MAYBE(exception, waiter.exception) {
       // The predicate threw an exception, apparently. Propagate it.
       // TODO(someday): Could we somehow have this be a recoverable exception? Presumably we'd
       //   then want MutexGuarded::when() to skip calling the callback, but then what should it
       //   return, since it normally returns the callback's result? Or maybe people who disable
       //   exceptions just really should not write predicates that can throw.
-      kj::throwFatalException(kj::mv(*exception));
+      kj::throwFatalException(kj::mv(**exception));
     }
 
     // Recompute sleep time.
-    KJ_IF_SOME(e, endTime) {
+    KJ_IF_MAYBE(e, endTime) {
       auto now = clock->now();
 
-      if (e > now) {
-        auto sleepTime = e - now;
+      if (*e > now) {
+        auto sleepTime = *e - now;
         sleepMs = sleepTime / kj::MILLISECONDS;
         if (sleepTime % kj::MILLISECONDS > 0 * kj::SECONDS) {
           // We guarantee we won't wake up too early.
@@ -740,9 +802,9 @@ void Mutex::wait(Predicate& predicate, Maybe<Duration> timeout, NoopSourceLocati
 void Mutex::induceSpuriousWakeupForTest() {
   auto nextWaiter = waitersHead;
   for (;;) {
-    KJ_IF_SOME(waiter, nextWaiter) {
-      nextWaiter = waiter.next;
-      WakeConditionVariable(&coercedCondvar(waiter.condvar));
+    KJ_IF_MAYBE(waiter, nextWaiter) {
+      nextWaiter = waiter->next;
+      WakeConditionVariable(&coercedCondvar(waiter->condvar));
     } else {
       // No more waiters.
       break;
@@ -808,19 +870,13 @@ void Once::reset() {
     } \
   }
 
-Mutex::Mutex(): mutex(PTHREAD_RWLOCK_INITIALIZER) {
-#if defined(__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__) && __ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__ < 1070
-  // In older versions of MacOS, mutexes initialized statically cannot be destroyed,
-  // so we must call the init function.
-  KJ_PTHREAD_CALL(pthread_rwlock_init(&mutex, NULL));
-#endif
-}
+Mutex::Mutex(): mutex(PTHREAD_RWLOCK_INITIALIZER) {}
 Mutex::~Mutex() {
   KJ_PTHREAD_CLEANUP(pthread_rwlock_destroy(&mutex));
 }
 
 bool Mutex::lock(Exclusivity exclusivity, Maybe<Duration> timeout, NoopSourceLocation) {
-  if (timeout != kj::none) {
+  if (timeout != nullptr) {
     KJ_UNIMPLEMENTED("Locking a mutex with a timeout is only supported on Linux.");
   }
   switch (exclusivity) {
@@ -842,15 +898,15 @@ void Mutex::unlock(Exclusivity exclusivity, Waiter* waiterToSkip) {
     // exclusive lock since under a shared lock the state couldn't have changed.
     auto nextWaiter = waitersHead;
     for (;;) {
-      KJ_IF_SOME(waiter, nextWaiter) {
-        nextWaiter = waiter.next;
+      KJ_IF_MAYBE(waiter, nextWaiter) {
+        nextWaiter = waiter->next;
 
-        if (&waiter != waiterToSkip && checkPredicate(waiter)) {
+        if (waiter != waiterToSkip && checkPredicate(*waiter)) {
           // This waiter's predicate now evaluates true, so wake it up. It doesn't matter if we
           // use _signal() vs. _broadcast() here since there's always only one thread waiting.
-          KJ_PTHREAD_CALL(pthread_mutex_lock(&waiter.stupidMutex));
-          KJ_PTHREAD_CALL(pthread_cond_signal(&waiter.condvar));
-          KJ_PTHREAD_CALL(pthread_mutex_unlock(&waiter.stupidMutex));
+          KJ_PTHREAD_CALL(pthread_mutex_lock(&waiter->stupidMutex));
+          KJ_PTHREAD_CALL(pthread_cond_signal(&waiter->condvar));
+          KJ_PTHREAD_CALL(pthread_mutex_unlock(&waiter->stupidMutex));
 
           // We only need to wake one waiter. Note that unlike the futex-based implementation, we
           // cannot "transfer ownership" of the lock to the waiter, therefore we cannot guarantee
@@ -891,24 +947,16 @@ void Mutex::assertLockedByCaller(Exclusivity exclusivity) const {
 void Mutex::wait(Predicate& predicate, Maybe<Duration> timeout, NoopSourceLocation) {
   // Add waiter to list.
   Waiter waiter {
-    kj::none, waitersTail, predicate, kj::none,
+    nullptr, waitersTail, predicate, nullptr,
     PTHREAD_COND_INITIALIZER, PTHREAD_MUTEX_INITIALIZER
   };
-
-#if defined(__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__) && __ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__ < 1070
-  // In older versions of MacOS, mutexes initialized statically cannot be destroyed,
-  // so we must call the init function.
-  KJ_PTHREAD_CALL(pthread_cond_init(&waiter.condvar, NULL));
-  KJ_PTHREAD_CALL(pthread_mutex_init(&waiter.stupidMutex, NULL));
-#endif
-
   addWaiter(waiter);
 
   // To guarantee that we've re-locked the mutex before scope exit, keep track of whether it is
   // currently.
   bool currentlyLocked = true;
   KJ_DEFER({
-    if (!currentlyLocked) lock(EXCLUSIVE, kj::none, NoopSourceLocation{});
+    if (!currentlyLocked) lock(EXCLUSIVE, nullptr, NoopSourceLocation{});
     removeWaiter(waiter);
 
     // Destroy pthread objects.
@@ -917,7 +965,7 @@ void Mutex::wait(Predicate& predicate, Maybe<Duration> timeout, NoopSourceLocati
   });
 
 #if !__APPLE__
-  if (timeout != kj::none) {
+  if (timeout != nullptr) {
     // Oops, the default condvar uses the wall clock, which is dumb... fix it to use the monotonic
     // clock. (Except not on macOS, where pthread_condattr_setclock() is unimplemented, but there's
     // a bizarre pthread_cond_timedwait_relative_np() method we can use instead...)
@@ -947,16 +995,16 @@ void Mutex::wait(Predicate& predicate, Maybe<Duration> timeout, NoopSourceLocati
     bool timedOut = false;
 
     // Wait for someone to signal the condvar.
-    KJ_IF_SOME(t, endTime) {
+    KJ_IF_MAYBE(t, endTime) {
 #if __APPLE__
       // On macOS, the absolute timeout can only be specified in wall time, not monotonic time,
       // which means modifying the system clock will break the wait. However, macOS happens to
       // provide an alternative relative-time wait function, so I guess we'll use that. It does
       // require recomputing the time every iteration...
-      struct timespec ts = toRelativeTimespec(kj::max(toTimePoint(t) - now(), 0 * kj::SECONDS));
+      struct timespec ts = toRelativeTimespec(kj::max(toTimePoint(*t) - now(), 0 * kj::SECONDS));
       int error = pthread_cond_timedwait_relative_np(&waiter.condvar, &waiter.stupidMutex, &ts);
 #else
-      int error = pthread_cond_timedwait(&waiter.condvar, &waiter.stupidMutex, &t);
+      int error = pthread_cond_timedwait(&waiter.condvar, &waiter.stupidMutex, t);
 #endif
       if (error != 0) {
         if (error == ETIMEDOUT) {
@@ -976,16 +1024,16 @@ void Mutex::wait(Predicate& predicate, Maybe<Duration> timeout, NoopSourceLocati
     // because we've already been signaled.
     KJ_PTHREAD_CALL(pthread_mutex_unlock(&waiter.stupidMutex));
 
-    lock(EXCLUSIVE, kj::none, NoopSourceLocation{});
+    lock(EXCLUSIVE, nullptr, NoopSourceLocation{});
     currentlyLocked = true;
 
-    KJ_IF_SOME(exception, waiter.exception) {
+    KJ_IF_MAYBE(exception, waiter.exception) {
       // The predicate threw an exception, apparently. Propagate it.
       // TODO(someday): Could we somehow have this be a recoverable exception? Presumably we'd
       //   then want MutexGuarded::when() to skip calling the callback, but then what should it
       //   return, since it normally returns the callback's result? Or maybe people who disable
       //   exceptions just really should not write predicates that can throw.
-      kj::throwFatalException(kj::mv(*exception));
+      kj::throwFatalException(kj::mv(**exception));
     }
 
     if (timedOut) {
@@ -997,11 +1045,11 @@ void Mutex::wait(Predicate& predicate, Maybe<Duration> timeout, NoopSourceLocati
 void Mutex::induceSpuriousWakeupForTest() {
   auto nextWaiter = waitersHead;
   for (;;) {
-    KJ_IF_SOME(waiter, nextWaiter) {
-      nextWaiter = waiter.next;
-      KJ_PTHREAD_CALL(pthread_mutex_lock(&waiter.stupidMutex));
-      KJ_PTHREAD_CALL(pthread_cond_signal(&waiter.condvar));
-      KJ_PTHREAD_CALL(pthread_mutex_unlock(&waiter.stupidMutex));
+    KJ_IF_MAYBE(waiter, nextWaiter) {
+      nextWaiter = waiter->next;
+      KJ_PTHREAD_CALL(pthread_mutex_lock(&waiter->stupidMutex));
+      KJ_PTHREAD_CALL(pthread_cond_signal(&waiter->condvar));
+      KJ_PTHREAD_CALL(pthread_mutex_unlock(&waiter->stupidMutex));
     } else {
       // No more waiters.
       break;
@@ -1011,13 +1059,7 @@ void Mutex::induceSpuriousWakeupForTest() {
 
 Once::Once(bool startInitialized)
     : state(startInitialized ? INITIALIZED : UNINITIALIZED),
-      mutex(PTHREAD_MUTEX_INITIALIZER) {
-#if defined(__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__) && __ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__ < 1070
-  // In older versions of MacOS, mutexes initialized statically cannot be destroyed,
-  // so we must call the init function.
-  KJ_PTHREAD_CALL(pthread_mutex_init(&mutex, NULL));
-#endif
-}
+      mutex(PTHREAD_MUTEX_INITIALIZER) {}
 Once::~Once() {
   KJ_PTHREAD_CLEANUP(pthread_mutex_destroy(&mutex));
 }

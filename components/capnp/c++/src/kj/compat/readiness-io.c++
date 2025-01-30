@@ -54,7 +54,7 @@ kj::Maybe<size_t> ReadyInputStreamWrapper::read(kj::ArrayPtr<byte> dst) {
       }).fork();
     }
 
-    return kj::none;
+    return nullptr;
   }
 
   return copyInto(dst, content);
@@ -74,7 +74,7 @@ kj::Maybe<size_t> ReadyOutputStreamWrapper::write(kj::ArrayPtr<const byte> data)
 
   if (filled == sizeof(buffer)) {
     // No space.
-    return kj::none;
+    return nullptr;
   }
 
   uint end = start + filled;
@@ -131,7 +131,7 @@ kj::Promise<void> ReadyOutputStreamWrapper::pump() {
 
   kj::Promise<void> promise = nullptr;
   if (end <= sizeof(buffer)) {
-    promise = output.write(kj::arrayPtr(buffer + start, filled));
+    promise = output.write(buffer + start, filled);
   } else {
     end = end % sizeof(buffer);
     segments[0] = kj::arrayPtr(buffer + start, buffer + sizeof(buffer));

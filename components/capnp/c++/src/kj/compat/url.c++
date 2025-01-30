@@ -84,30 +84,30 @@ void toLower(String& text) {
 }
 
 Maybe<ArrayPtr<const char>> trySplit(StringPtr& text, char c) {
-  KJ_IF_SOME(pos, text.findFirst(c)) {
-    ArrayPtr<const char> result = text.first(pos);
-    text = text.slice(pos + 1);
+  KJ_IF_MAYBE(pos, text.findFirst(c)) {
+    ArrayPtr<const char> result = text.slice(0, *pos);
+    text = text.slice(*pos + 1);
     return result;
   } else {
-    return kj::none;
+    return nullptr;
   }
 }
 
 Maybe<ArrayPtr<const char>> trySplit(ArrayPtr<const char>& text, char c) {
   for (auto i: kj::indices(text)) {
     if (text[i] == c) {
-      ArrayPtr<const char> result = text.first(i);
+      ArrayPtr<const char> result = text.slice(0, i);
       text = text.slice(i + 1, text.size());
       return result;
     }
   }
-  return kj::none;
+  return nullptr;
 }
 
 ArrayPtr<const char> split(StringPtr& text, const parse::CharGroup_& chars) {
   for (auto i: kj::indices(text)) {
     if (chars.contains(text[i])) {
-      ArrayPtr<const char> result = text.first(i);
+      ArrayPtr<const char> result = text.slice(0, i);
       text = text.slice(i);
       return result;
     }
@@ -175,52 +175,52 @@ Maybe<Url> Url::tryParse(StringPtr text, Context context, Options options) {
 
   if (context == HTTP_REQUEST) {
     if (!text.startsWith("/")) {
-      return kj::none;
+      return nullptr;
     }
   } else {
-    KJ_IF_SOME(scheme, trySplit(text, ':')) {
-      result.scheme = kj::str(scheme);
+    KJ_IF_MAYBE(scheme, trySplit(text, ':')) {
+      result.scheme = kj::str(*scheme);
     } else {
       // missing scheme
-      return kj::none;
+      return nullptr;
     }
     toLower(result.scheme);
     if (result.scheme.size() == 0 ||
         !ALPHAS.contains(result.scheme[0]) ||
         !SCHEME_CHARS.containsAll(result.scheme.slice(1))) {
       // bad scheme
-      return kj::none;
+      return nullptr;
     }
 
     if (!text.startsWith("//")) {
       // We require an authority (hostname) part.
-      return kj::none;
+      return nullptr;
     }
     text = text.slice(2);
 
     {
       auto authority = split(text, END_AUTHORITY);
 
-      KJ_IF_SOME(userpass, trySplit(authority, '@')) {
+      KJ_IF_MAYBE(userpass, trySplit(authority, '@')) {
         if (context != REMOTE_HREF) {
           // No user/pass allowed here.
-          return kj::none;
+          return nullptr;
         }
-        KJ_IF_SOME(username, trySplit(userpass, ':')) {
+        KJ_IF_MAYBE(username, trySplit(*userpass, ':')) {
           result.userInfo = UserInfo {
-            percentDecode(username, err, options),
-            percentDecode(userpass, err, options)
+            percentDecode(*username, err, options),
+            percentDecode(*userpass, err, options)
           };
         } else {
           result.userInfo = UserInfo {
-            percentDecode(userpass, err, options),
-            kj::none
+            percentDecode(*userpass, err, options),
+            nullptr
           };
         }
       }
 
       result.host = percentDecode(authority, err, options);
-      if (!HOST_CHARS.containsAll(result.host)) return kj::none;
+      if (!HOST_CHARS.containsAll(result.host)) return nullptr;
       toLower(result.host);
     }
   }
@@ -249,8 +249,8 @@ Maybe<Url> Url::tryParse(StringPtr text, Context context, Options options) {
       auto part = split(text, END_QUERY_PART);
 
       if (part.size() > 0 || options.allowEmpty) {
-        KJ_IF_SOME(key, trySplit(part, '=')) {
-          result.query.add(QueryParam { percentDecodeQuery(key, err, options),
+        KJ_IF_MAYBE(key, trySplit(part, '=')) {
+          result.query.add(QueryParam { percentDecodeQuery(*key, err, options),
                                         percentDecodeQuery(part, err, options) });
         } else {
           result.query.add(QueryParam { percentDecodeQuery(part, err, options), nullptr });
@@ -262,7 +262,7 @@ Maybe<Url> Url::tryParse(StringPtr text, Context context, Options options) {
   if (text.startsWith("#")) {
     if (context != REMOTE_HREF) {
       // No fragment allowed here.
-      return kj::none;
+      return nullptr;
     }
     result.fragment = percentDecode(text.slice(1), err, options);
   } else {
@@ -270,7 +270,7 @@ Maybe<Url> Url::tryParse(StringPtr text, Context context, Options options) {
     KJ_ASSERT(text.size() == 0);
   }
 
-  if (err) return kj::none;
+  if (err) return nullptr;
 
   return kj::mv(result);
 }
@@ -295,7 +295,7 @@ Maybe<Url> Url::tryParseRelative(StringPtr text) const {
     for (auto i: kj::indices(text)) {
       if (text[i] == ':') {
         // found valid scheme
-        result.scheme = kj::str(text.first(i));
+        result.scheme = kj::str(text.slice(0, i));
         text = text.slice(i + 1);
         gotScheme = true;
         break;
@@ -317,22 +317,22 @@ Maybe<Url> Url::tryParseRelative(StringPtr text) const {
 
     auto authority = split(text, END_AUTHORITY);
 
-    KJ_IF_SOME(userpass, trySplit(authority, '@')) {
-      KJ_IF_SOME(username, trySplit(userpass, ':')) {
+    KJ_IF_MAYBE(userpass, trySplit(authority, '@')) {
+      KJ_IF_MAYBE(username, trySplit(*userpass, ':')) {
         result.userInfo = UserInfo {
-          percentDecode(username, err, options),
-          percentDecode(userpass, err, options)
+          percentDecode(*username, err, options),
+          percentDecode(*userpass, err, options)
         };
       } else {
         result.userInfo = UserInfo {
-          percentDecode(userpass, err, options),
-          kj::none
+          percentDecode(*userpass, err, options),
+          nullptr
         };
       }
     }
 
     result.host = percentDecode(authority, err, options);
-    if (!HOST_CHARS.containsAll(result.host)) return kj::none;
+    if (!HOST_CHARS.containsAll(result.host)) return nullptr;
     toLower(result.host);
   } else {
     // copy authority
@@ -357,7 +357,7 @@ Maybe<Url> Url::tryParseRelative(StringPtr text) const {
     } else if (this->path.size() > 0) {
       // New path is relative, so start from the old path, dropping everything after the last
       // slash.
-      auto slice = this->path.first(this->path.size() - (this->hasTrailingSlash ? 0 : 1));
+      auto slice = this->path.slice(0, this->path.size() - (this->hasTrailingSlash ? 0 : 1));
       result.path = KJ_MAP(part, slice) { return kj::str(part); };
       result.hasTrailingSlash = true;
     }
@@ -392,8 +392,8 @@ Maybe<Url> Url::tryParseRelative(StringPtr text) const {
       auto part = split(text, END_QUERY_PART);
 
       if (part.size() > 0) {
-        KJ_IF_SOME(key, trySplit(part, '=')) {
-          result.query.add(QueryParam { percentDecodeQuery(key, err, options),
+        KJ_IF_MAYBE(key, trySplit(part, '=')) {
+          result.query.add(QueryParam { percentDecodeQuery(*key, err, options),
                                         percentDecodeQuery(part, err, options) });
         } else {
           result.query.add(QueryParam { percentDecodeQuery(part, err, options),
@@ -417,7 +417,7 @@ Maybe<Url> Url::tryParseRelative(StringPtr text) const {
     KJ_ASSERT(text.size() == 0);
   }
 
-  if (err) return kj::none;
+  if (err) return nullptr;
 
   return kj::mv(result);
 }
@@ -430,12 +430,12 @@ String Url::toString(Context context) const {
     chars.addAll(StringPtr("://"));
 
     if (context == REMOTE_HREF) {
-      KJ_IF_SOME(user, userInfo) {
-        chars.addAll(options.percentDecode ? encodeUriUserInfo(user.username)
-                                          : kj::str(user.username));
-        KJ_IF_SOME(pass, user.password) {
+      KJ_IF_MAYBE(user, userInfo) {
+        chars.addAll(options.percentDecode ? encodeUriUserInfo(user->username)
+                                          : kj::str(user->username));
+        KJ_IF_MAYBE(pass, user->password) {
           chars.add(':');
-          chars.addAll(options.percentDecode ? encodeUriUserInfo(pass) : kj::str(pass));
+          chars.addAll(options.percentDecode ? encodeUriUserInfo(*pass) : kj::str(*pass));
         }
         chars.add('@');
       }
@@ -482,9 +482,9 @@ String Url::toString(Context context) const {
   }
 
   if (context == REMOTE_HREF) {
-    KJ_IF_SOME(f, fragment) {
+    KJ_IF_MAYBE(f, fragment) {
       chars.add('#');
-      chars.addAll(options.percentDecode ? encodeUriFragment(f) : kj::str(f));
+      chars.addAll(options.percentDecode ? encodeUriFragment(*f) : kj::str(*f));
     }
   }
 

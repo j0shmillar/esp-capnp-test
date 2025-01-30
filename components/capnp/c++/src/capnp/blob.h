@@ -79,9 +79,7 @@ public:
   inline Reader(const StringPtr& value): StringPtr(value) {}
 
 #if KJ_COMPILER_SUPPORTS_STL_STRING_INTEROP
-  template <
-    typename T,
-    typename = kj::EnableIf<kj::canConvert<decltype(kj::instance<T>().c_str()), const char*>()>>
+  template <typename T, typename = decltype(kj::instance<T>().c_str())>
   inline Reader(const T& t): StringPtr(t) {}
   // Allow implicit conversion from any class that has a c_str() method (namely, std::string).
   // We use a template trick to detect std::string in order to avoid including the header for
@@ -147,8 +145,10 @@ public:
   inline const char* end() const { return content.end() - 1; }
 
   inline bool operator==(decltype(nullptr)) const { return content.size() <= 1; }
+  inline bool operator!=(decltype(nullptr)) const { return content.size() > 1; }
 
   inline bool operator==(Builder other) const { return asString() == other.asString(); }
+  inline bool operator!=(Builder other) const { return asString() != other.asString(); }
   inline bool operator< (Builder other) const { return asString() <  other.asString(); }
   inline bool operator> (Builder other) const { return asString() >  other.asString(); }
   inline bool operator<=(Builder other) const { return asString() <= other.asString(); }
@@ -173,7 +173,8 @@ inline kj::StringPtr KJ_STRINGIFY(Text::Builder builder) {
   return builder.asString();
 }
 
-inline bool operator==(const char* a, const Text::Builder& b) { return a == b.asString(); }
+inline bool operator==(const char* a, const Text::Builder& b) { return b.asString() == a; }
+inline bool operator!=(const char* a, const Text::Builder& b) { return b.asString() != a; }
 
 inline Text::Builder::operator kj::StringPtr() const {
   return kj::StringPtr(content.begin(), content.size() - 1);
@@ -184,19 +185,19 @@ inline kj::StringPtr Text::Builder::asString() const {
 }
 
 inline Text::Builder::operator kj::ArrayPtr<char>() {
-  return content.first(content.size() - 1);
+  return content.slice(0, content.size() - 1);
 }
 
 inline kj::ArrayPtr<char> Text::Builder::asArray() {
-  return content.first(content.size() - 1);
+  return content.slice(0, content.size() - 1);
 }
 
 inline Text::Builder::operator kj::ArrayPtr<const char>() const {
-  return content.first(content.size() - 1);
+  return content.slice(0, content.size() - 1);
 }
 
 inline kj::ArrayPtr<const char> Text::Builder::asArray() const {
-  return content.first(content.size() - 1);
+  return content.slice(0, content.size() - 1);
 }
 
 inline kj::StringPtr Text::Builder::slice(size_t start) const {

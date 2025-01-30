@@ -37,7 +37,7 @@ public:
 #if CAPNP_LITE
     KJ_UNIMPLEMENTED("no cap tables in lite mode");
 #else
-    return kj::none;
+    return nullptr;
 #endif
   }
 };

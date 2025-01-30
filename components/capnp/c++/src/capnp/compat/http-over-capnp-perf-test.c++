@@ -29,6 +29,8 @@
 #include <dlfcn.h>
 #endif
 
+#if KJ_HAS_COROUTINE
+
 namespace capnp {
 namespace {
 
@@ -126,10 +128,10 @@ public:
       return inner.tryGetLength();
     }
 
-    kj::Promise<void> write(kj::ArrayPtr<const byte> buffer)  override {
+    kj::Promise<void> write(const void* buffer, size_t size)  override {
       ++writeCount;
-      writeBytes += buffer.size();
-      return inner.write(buffer);
+      writeBytes += size;
+      return inner.write(buffer, size);
     }
     kj::Promise<void> write(kj::ArrayPtr<const kj::ArrayPtr<const byte>> pieces) override {
       ++writeCount;
@@ -232,8 +234,8 @@ public:
     return kj::String(chars.releaseAsArray());
   }
 
-  kj::Promise<void> write(kj::ArrayPtr<const byte> buffer) override {
-    chars.addAll(buffer);
+  kj::Promise<void> write(const void* buffer, size_t size) override {
+    chars.addAll(kj::arrayPtr(reinterpret_cast<const char*>(buffer), size));
     return kj::READY_NOW;
   }
 
@@ -269,7 +271,7 @@ public:
     responseHeaders.set(kj::HttpHeaderId::CONTENT_TYPE, "text/plain");
     responseHeaders.set(customHeaderId, "foobar"_kj);
     auto stream = response.send(200, "OK", responseHeaders);
-    auto promise = stream->write(HELLO_WORLD.asBytes());
+    auto promise = stream->write(HELLO_WORLD.begin(), HELLO_WORLD.size());
     return promise.attach(kj::mv(stream));
   }
 
@@ -314,7 +316,7 @@ private:
 
   kj::Own<kj::AsyncOutputStream> send(
       uint statusCode, kj::StringPtr statusText, const kj::HttpHeaders& headers,
-      kj::Maybe<uint64_t> expectedBodySize = kj::none) override {
+      kj::Maybe<uint64_t> expectedBodySize = nullptr) override {
     KJ_ASSERT(statusCode == 200);
     KJ_ASSERT(statusText == "OK"_kj);
     KJ_ASSERT(headers.get(customHeaderId) == "foobar"_kj);
@@ -440,3 +442,5 @@ KJ_TEST("Benchmark HTTP-over-capnp full RPC") {
 
 }  // namespace
 }  // namespace capnp
+
+#endif  // KJ_HAS_COROUTINE

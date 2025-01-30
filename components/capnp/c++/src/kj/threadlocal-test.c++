@@ -19,27 +19,51 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-#pragma once
-
-#include <kj/string.h>
-#include <kj/vector.h>
+#include "threadlocal.h"
+#include "debug.h"
+#include "thread.h"
+#include <kj/compat/gtest.h>
 
 namespace kj {
+namespace {
 
-class GlobFilter {
-  // Implements glob filters for the --filter flag.
+KJ_THREADLOCAL_PTR(uint) tls1 = nullptr;
+KJ_THREADLOCAL_PTR(uint) tls2;
 
-public:
-  explicit GlobFilter(const char* pattern);
-  explicit GlobFilter(ArrayPtr<const char> pattern);
+TEST(ThreadLocal, Basic) {
+  // Verify that both started out null.
+  uint* p = tls1;
+  EXPECT_EQ(nullptr, p);
+  p = tls2;
+  EXPECT_EQ(nullptr, p);
 
-  bool matches(StringPtr name);
+  // Set tls1, then verify that only tls1 changed, not tls2.
+  uint i = 123;
+  tls1 = &i;
 
-private:
-  String pattern;
-  Vector<uint> states;
+  p = tls1;
+  EXPECT_EQ(&i, p);
+  p = tls2;
+  EXPECT_EQ(nullptr, p);
 
-  void applyState(char c, int state);
-};
+  // Check that in another thread, tls1 starts null but can be changed.
+  uint j = 456;
+  bool threadDone = false;
+  Thread([&]() {
+    p = tls1;
+    EXPECT_EQ(nullptr, p);
+    tls1 = &j;
 
+    p = tls1;
+    EXPECT_EQ(&j, p);
+    threadDone = true;
+  });
+  EXPECT_TRUE(threadDone);
+
+  // tls1 didn't change in this thread.
+  p = tls1;
+  EXPECT_EQ(&i, p);
+}
+
+}  // namespace
 }  // namespace kj

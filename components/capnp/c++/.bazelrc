@@ -1,67 +1,26 @@
-common --noenable_bzlmod
 common --enable_platform_specific_config
 
-build:unix --cxxopt='-std=c++20' --host_cxxopt='-std=c++20' --force_pic --verbose_failures
-build:unix --cxxopt='-Wall'
-build:unix --cxxopt='-Wextra'
-build:unix --cxxopt='-Wsuggest-override'
+build:unix --cxxopt='-std=c++14' --host_cxxopt='-std=c++14' --force_pic --verbose_failures
+build:unix --cxxopt='-Wall' --host_cxxopt='-Wall'
+build:unix --cxxopt='-Wextra' --host_cxxopt='-Wextra'
 build:unix --cxxopt='-Wno-strict-aliasing' --host_cxxopt='-Wno-strict-aliasing'
 build:unix --cxxopt='-Wno-sign-compare' --host_cxxopt='-Wno-sign-compare'
 build:unix --cxxopt='-Wno-unused-parameter' --host_cxxopt='-Wno-unused-parameter'
-build:unix --cxxopt='-Wno-deprecated-this-capture' --host_cxxopt='-Wno-deprecated-this-capture'
-build:unix --cxxopt='-DKJ_HEADER_WARNINGS'
-build:unix --cxxopt='-DCAPNP_HEADER_WARNINGS'
-# enable libdl integration for stacktrace symbolization
-build:unix --//src/kj:libdl=True
-
-# I needed these magic spells to build locally with clang-11 and clang-12 on Ubuntu. clang-13 and up
-# work out-of-the-box.
-# TODO(2.0): Remove this when we support g++ again.
-build:linux --cxxopt=-stdlib=libc++ --host_cxxopt=-stdlib=libc++
-build:linux --linkopt='-stdlib=libc++' --host_linkopt='-stdlib=libc++'
-# Drop default link flags, which include libstdc++ for Linux
-build:linux --features=-default_link_libs --host_features=-default_link_libs
-build:linux --linkopt='-lc++' --linkopt='-lm'
-build:linux --host_linkopt='-lc++' --host_linkopt='-lm'
-
-# Limit recursive header includes within libc++. This improves compliance with IWYU, helps avoid
-# errors with downstream projects that implicitly define this already and reduces total include size.
-https://libcxx.llvm.org/DesignDocs/HeaderRemovalPolicy.html
-build:unix --cxxopt=-D_LIBCPP_REMOVE_TRANSITIVE_INCLUDES
-build:unix --host_cxxopt=-D_LIBCPP_REMOVE_TRANSITIVE_INCLUDES
 
 build:linux --config=unix
 build:macos --config=unix
 
 # See https://bazel.build/configure/windows#symlink
 startup --windows_enable_symlinks
-# We use LLVM's MSVC-compatible compiler driver to compile our code on Windows under Bazel. MSVC is
-# natively supported when using CMake builds. This does not support toolchain resolution yet.
-build:windows --noincompatible_enable_cc_toolchain_resolution
+# We use LLVM's MSVC-compatible compiler driver to compile our code on Windows
+# under Bazel. MSVC is natively supported when using CMake builds.
 build:windows --compiler=clang-cl
 
-build:windows --cxxopt='/std:c++20' --host_cxxopt='/std:c++20' --verbose_failures
-# The `/std:c++20` argument is unused during boringssl compilation and we don't
+build:windows --cxxopt='/std:c++14' --host_cxxopt='/std:c++14' --verbose_failures
+build:windows --cxxopt='/wo4503' --host_cxxopt='/wo4503'
+# The `/std:c++14` argument is unused during boringssl compilation and we don't
 # want a warning when compiling each file.
 build:windows --cxxopt='-Wno-unused-command-line-argument' --host_cxxopt='-Wno-unused-command-line-argument'
-# MSVC disappointingly sets __cplusplus to 199711L by default. Defining /Zc:__cplusplus makes it
-# set the correct value.
-build:windows --cxxopt='/Zc:__cplusplus' --host_cxxopt='/Zc:__cplusplus'
 
 # build with ssl, zlib and bazel by default
-build --//src/kj:openssl=True
-build --//src/kj:zlib=True
-build --//src/kj:brotli=True
-
-build:no-omit-frame-pointer --copt="-fno-omit-frame-pointer"
-build:no-omit-frame-pointer --copt="-mno-omit-leaf-frame-pointer"
-
-build:sanitizers-common --copt="-Og"
-build:sanitizers-common --copt="-fno-optimize-sibling-calls"
-build:sanitizers-common --config=no-omit-frame-pointer
-# sanitizers often do work on shutdown, do it cleanly
-build:sanitizers-common --test_env=KJ_CLEAN_SHUTDOWN=1
-
-build:asan --config=sanitizers-common
-build:asan --copt="-fsanitize=address" --linkopt="-fsanitize=address"
-build:asan --test_env=ASAN_OPTIONS=abort_on_error=1
+build --//src/kj:openssl=True --//src/kj:zlib=True --//src/kj:brotli=True

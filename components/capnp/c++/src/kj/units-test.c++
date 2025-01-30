@@ -21,6 +21,7 @@
 
 #include "units.h"
 #include <kj/compat/gtest.h>
+#include <iostream>
 
 namespace kj {
 namespace {

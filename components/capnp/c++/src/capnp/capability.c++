@@ -27,6 +27,7 @@
 #include <kj/refcount.h>
 #include <kj/debug.h>
 #include <kj/vector.h>
+#include <map>
 #include "generated-header-support.h"
 
 namespace capnp {
@@ -56,7 +57,7 @@ static BrokenCapFactoryImpl brokenCapFactory;
 
 }  // namespace
 
-ClientHook::ClientHook(const void* brand): brand(brand) {
+ClientHook::ClientHook() {
   setGlobalBrokenCapFactoryForLayoutCpp(brokenCapFactory);
 }
 
@@ -70,19 +71,19 @@ Capability::Client::Client(kj::Exception&& exception)
 
 kj::Promise<kj::Maybe<int>> Capability::Client::getFd() {
   auto fd = hook->getFd();
-  if (fd != kj::none) {
+  if (fd != nullptr) {
     return fd;
-  } else KJ_IF_SOME(promise, hook->whenMoreResolved()) {
-    return promise.attach(hook->addRef()).then([](kj::Own<ClientHook> newHook) {
+  } else KJ_IF_MAYBE(promise, hook->whenMoreResolved()) {
+    return promise->attach(hook->addRef()).then([](kj::Own<ClientHook> newHook) {
       return Client(kj::mv(newHook)).getFd();
     });
   } else {
-    return kj::Maybe<int>(kj::none);
+    return kj::Maybe<int>(nullptr);
   }
 }
 
 kj::Maybe<kj::Promise<Capability::Client>> Capability::Server::shortenPath() {
-  return kj::none;
+  return nullptr;
 }
 
 Capability::Server::DispatchCallResult Capability::Server::internalUnimplemented(
@@ -111,8 +112,8 @@ kj::Promise<void> Capability::Server::internalUnimplemented(
 ResponseHook::~ResponseHook() noexcept(false) {}
 
 kj::Promise<void> ClientHook::whenResolved() {
-  KJ_IF_SOME(promise, whenMoreResolved()) {
-    return promise.then([](kj::Own<ClientHook>&& resolution) {
+  KJ_IF_MAYBE(promise, whenMoreResolved()) {
+    return promise->then([](kj::Own<ClientHook>&& resolution) {
       return resolution->whenResolved();
     });
   } else {
@@ -127,8 +128,8 @@ kj::Promise<void> Capability::Client::whenResolved() {
 // =======================================================================================
 
 static inline uint firstSegmentSize(kj::Maybe<MessageSize> sizeHint) {
-  KJ_IF_SOME(s, sizeHint) {
-    return s.wordCount;
+  KJ_IF_MAYBE(s, sizeHint) {
+    return s->wordCount;
   } else {
     return SUGGESTED_FIRST_SEGMENT_WORDS;
   }
@@ -150,17 +151,17 @@ public:
         isStreaming(isStreaming) {}
 
   AnyPointer::Reader getParams() override {
-    KJ_IF_SOME(r, request) {
-      return r.get()->getRoot<AnyPointer>();
+    KJ_IF_MAYBE(r, request) {
+      return r->get()->getRoot<AnyPointer>();
     } else {
       KJ_FAIL_REQUIRE("Can't call getParams() after releaseParams().");
     }
   }
   void releaseParams() override {
-    request = kj::none;
+    request = nullptr;
   }
   AnyPointer::Builder getResults(kj::Maybe<MessageSize> sizeHint) override {
-    if (response == kj::none) {
+    if (response == nullptr) {
       auto localResponse = kj::heap<LocalResponse>(sizeHint);
       responseBuilder = localResponse->message.getRoot<AnyPointer>();
       response = Response<AnyPointer>(responseBuilder.asReader(), kj::mv(localResponse));
@@ -168,19 +169,19 @@ public:
     return responseBuilder;
   }
   void setPipeline(kj::Own<PipelineHook>&& pipeline) override {
-    KJ_IF_SOME(f, tailCallPipelineFulfiller) {
-      f->fulfill(AnyPointer::Pipeline(kj::mv(pipeline)));
+    KJ_IF_MAYBE(f, tailCallPipelineFulfiller) {
+      f->get()->fulfill(AnyPointer::Pipeline(kj::mv(pipeline)));
     }
   }
   kj::Promise<void> tailCall(kj::Own<RequestHook>&& request) override {
     auto result = directTailCall(kj::mv(request));
-    KJ_IF_SOME(f, tailCallPipelineFulfiller) {
-      f->fulfill(AnyPointer::Pipeline(kj::mv(result.pipeline)));
+    KJ_IF_MAYBE(f, tailCallPipelineFulfiller) {
+      f->get()->fulfill(AnyPointer::Pipeline(kj::mv(result.pipeline)));
     }
     return kj::mv(result.promise);
   }
   ClientHook::VoidPromiseAndPipeline directTailCall(kj::Own<RequestHook>&& request) override {
-    KJ_REQUIRE(response == kj::none, "Can't call tailCall() after initializing the results struct.");
+    KJ_REQUIRE(response == nullptr, "Can't call tailCall() after initializing the results struct.");
 
     if (hints.onlyPromisePipeline) {
       return {
@@ -251,6 +252,10 @@ public:
         kj::mv(message), client->addRef(), hints, isStreaming);
     auto vpap = client->call(interfaceId, methodId, kj::addRef(*context), hints);
     return AnyPointer::Pipeline(kj::mv(vpap.pipeline));
+  }
+
+  const void* getBrand() override {
+    return nullptr;
   }
 
   kj::Own<MallocMessageBuilder> message;
@@ -440,10 +445,10 @@ public:
   }
 
   kj::Maybe<ClientHook&> getResolved() override {
-    KJ_IF_SOME(inner, redirect) {
-      return *inner;
+    KJ_IF_MAYBE(inner, redirect) {
+      return **inner;
     } else {
-      return kj::none;
+      return nullptr;
     }
   }
 
@@ -455,11 +460,15 @@ public:
     return kj::addRef(*this);
   }
 
+  const void* getBrand() override {
+    return nullptr;
+  }
+
   kj::Maybe<int> getFd() override {
-    KJ_IF_SOME(r, redirect) {
-      return r->getFd();
+    KJ_IF_MAYBE(r, redirect) {
+      return r->get()->getFd();
     } else {
-      return kj::none;
+      return nullptr;
     }
   }
 
@@ -493,8 +502,8 @@ private:
 };
 
 kj::Own<ClientHook> QueuedPipeline::getPipelinedCap(kj::Array<PipelineOp>&& ops) {
-  KJ_IF_SOME(r, redirect) {
-    return r->getPipelinedCap(kj::mv(ops));
+  KJ_IF_MAYBE(r, redirect) {
+    return r->get()->getPipelinedCap(kj::mv(ops));
   } else {
     return clientMap.findOrCreate(ops.asPtr(), [&]() {
       auto clientPromise = promise.addBranch()
@@ -516,11 +525,11 @@ public:
       : context(kj::mv(contextParam)),
         results(context->getResults(MessageSize { 0, 0 })) {}
 
-  kj::Own<PipelineHook> addRef() override {
+  kj::Own<PipelineHook> addRef() {
     return kj::addRef(*this);
   }
 
-  kj::Own<ClientHook> getPipelinedCap(kj::ArrayPtr<const PipelineOp> ops) override {
+  kj::Own<ClientHook> getPipelinedCap(kj::ArrayPtr<const PipelineOp> ops) {
     return results.getPipelinedCap(ops);
   }
 
@@ -531,8 +540,7 @@ private:
 
 class LocalClient final: public ClientHook, public kj::Refcounted {
 public:
-  LocalClient(kj::Own<Capability::Server>&& serverParam, bool revocable = false)
-      : ClientHook(&BRAND) {
+  LocalClient(kj::Own<Capability::Server>&& serverParam, bool revocable = false) {
     auto& serverRef = *server.emplace(kj::mv(serverParam));
     serverRef.thisHook = this;
     if (revocable) revoker.emplace();
@@ -541,7 +549,7 @@ public:
   LocalClient(kj::Own<Capability::Server>&& serverParam,
               _::CapabilityServerSetBase& capServerSet, void* ptr,
               bool revocable = false)
-      : ClientHook(&BRAND), capServerSet(&capServerSet), ptr(ptr) {
+      : capServerSet(&capServerSet), ptr(ptr) {
     auto& serverRef = *server.emplace(kj::mv(serverParam));
     serverRef.thisHook = this;
     if (revocable) revoker.emplace();
@@ -549,33 +557,29 @@ public:
   }
 
   ~LocalClient() noexcept(false) {
-    KJ_IF_SOME(s, server) {
-      s->thisHook = kj::none;
+    KJ_IF_MAYBE(s, server) {
+      s->get()->thisHook = nullptr;
     }
   }
 
-  bool isRevocable() {
-    return revoker != kj::none;
-  }
-
   void revoke(kj::Exception&& e) {
-    KJ_IF_SOME(s, server) {
+    KJ_IF_MAYBE(s, server) {
       KJ_ASSERT_NONNULL(revoker).cancel(e);
       brokenException = kj::mv(e);
-      s->thisHook = kj::none;
-      server = kj::none;
+      s->get()->thisHook = nullptr;
+      server = nullptr;
     }
   }
 
   Request<AnyPointer, AnyPointer> newCall(
       uint64_t interfaceId, uint16_t methodId, kj::Maybe<MessageSize> sizeHint,
       CallHints hints) override {
-    KJ_IF_SOME(r, resolved) {
+    KJ_IF_MAYBE(r, resolved) {
       // We resolved to a shortened path. New calls MUST go directly to the replacement capability
       // so that their ordering is consistent with callers who call getResolved() to get direct
       // access to the new capability. In particular it's important that we don't place these calls
       // in our streaming queue.
-      return r->newCall(interfaceId, methodId, sizeHint, hints);
+      return r->get()->newCall(interfaceId, methodId, sizeHint, hints);
     }
 
     auto hook = kj::heap<LocalRequest>(
@@ -586,12 +590,12 @@ public:
 
   VoidPromiseAndPipeline call(uint64_t interfaceId, uint16_t methodId,
                               kj::Own<CallContextHook>&& context, CallHints hints) override {
-    KJ_IF_SOME(r, resolved) {
+    KJ_IF_MAYBE(r, resolved) {
       // We resolved to a shortened path. New calls MUST go directly to the replacement capability
       // so that their ordering is consistent with callers who call getResolved() to get direct
       // access to the new capability. In particular it's important that we don't place these calls
       // in our streaming queue.
-      return r->call(interfaceId, methodId, kj::mv(context), hints);
+      return r->get()->call(interfaceId, methodId, kj::mv(context), hints);
     }
 
     auto contextPtr = context.get();
@@ -666,14 +670,14 @@ public:
   }
 
   kj::Maybe<kj::Promise<kj::Own<ClientHook>>> whenMoreResolved() override {
-    KJ_IF_SOME(r, resolved) {
-      return kj::Promise<kj::Own<ClientHook>>(r->addRef());
-    } else KJ_IF_SOME(t, resolveTask) {
-      return t.addBranch().then([this]() {
+    KJ_IF_MAYBE(r, resolved) {
+      return kj::Promise<kj::Own<ClientHook>>(r->get()->addRef());
+    } else KJ_IF_MAYBE(t, resolveTask) {
+      return t->addBranch().then([this]() {
         return KJ_ASSERT_NONNULL(resolved)->addRef();
       });
     } else {
-      return kj::none;
+      return nullptr;
     }
   }
 
@@ -683,6 +687,10 @@ public:
 
   static const uint BRAND;
   // Value is irrelevant; used for pointer.
+
+  const void* getBrand() override {
+    return &BRAND;
+  }
 
   kj::Maybe<kj::Promise<void*>> getLocalServer(_::CapabilityServerSetBase& capServerSet) {
     // If this is a local capability created through `capServerSet`, return the underlying Server.
@@ -716,15 +724,15 @@ public:
         return kj::Promise<void*>(ptr);
       }
     } else {
-      return kj::none;
+      return nullptr;
     }
   }
 
   kj::Maybe<int> getFd() override {
-    KJ_IF_SOME(s, server) {
-      return s->getFd();
+    KJ_IF_MAYBE(s, server) {
+      return s->get()->getFd();
     } else {
-      return kj::none;
+      return nullptr;
     }
   }
 
@@ -741,8 +749,8 @@ private:
 
   void startResolveTask(Capability::Server& serverRef) {
     resolveTask = serverRef.shortenPath().map([this](kj::Promise<Capability::Client> promise) {
-      KJ_IF_SOME(r, revoker) {
-        promise = r.wrap(kj::mv(promise));
+      KJ_IF_MAYBE(r, revoker) {
+        promise = r->wrap(kj::mv(promise));
       }
 
       return promise.then([this](Capability::Client&& cap) {
@@ -785,9 +793,9 @@ private:
 
     void unblock() {
       unlink();
-      KJ_IF_SOME(c, context) {
+      KJ_IF_MAYBE(c, context) {
         fulfiller.fulfill(kj::evalNow([&]() {
-          return client.callInternal(interfaceId, methodId, c);
+          return client.callInternal(interfaceId, methodId, *c);
         }));
       } else {
         // This is just a barrier.
@@ -808,8 +816,8 @@ private:
     void unlink() {
       if (prev != nullptr) {
         *prev = next;
-        KJ_IF_SOME(n, next) {
-          n.prev = prev;
+        KJ_IF_MAYBE(n, next) {
+          n->prev = prev;
         } else {
           client.blockedCallsEnd = prev;
         }
@@ -821,13 +829,13 @@ private:
   class BlockingScope {
   public:
     BlockingScope(LocalClient& client): client(client) { client.blocked = true; }
-    BlockingScope(): client(kj::none) {}
-    BlockingScope(BlockingScope&& other): client(other.client) { other.client = kj::none; }
+    BlockingScope(): client(nullptr) {}
+    BlockingScope(BlockingScope&& other): client(other.client) { other.client = nullptr; }
     KJ_DISALLOW_COPY(BlockingScope);
 
     ~BlockingScope() noexcept(false) {
-      KJ_IF_SOME(c, client) {
-        c.unblock();
+      KJ_IF_MAYBE(c, client) {
+        c->unblock();
       }
     }
 
@@ -843,8 +851,8 @@ private:
   void unblock() {
     blocked = false;
     while (!blocked) {
-      KJ_IF_SOME(t, blockedCalls) {
-        t.unblock();
+      KJ_IF_MAYBE(t, blockedCalls) {
+        t->unblock();
       } else {
         break;
       }
@@ -855,17 +863,17 @@ private:
                                  CallContextHook& context) {
     KJ_ASSERT(!blocked);
 
-    KJ_IF_SOME(e, brokenException) {
+    KJ_IF_MAYBE(e, brokenException) {
       // Previous streaming call threw, so everything fails from now on.
-      return kj::cp(e);
+      return kj::cp(*e);
     }
 
     // `server` can't be null here since `brokenException` is null.
     auto result = KJ_ASSERT_NONNULL(server)->dispatchCall(interfaceId, methodId,
                                        CallContext<AnyPointer, AnyPointer>(context));
 
-    KJ_IF_SOME(r, revoker) {
-      result.promise = r.wrap(kj::mv(result.promise));
+    KJ_IF_MAYBE(r, revoker) {
+      result.promise = r->wrap(kj::mv(result.promise));
     }
 
     if (!result.allowCancellation) {
@@ -892,42 +900,14 @@ private:
 
 const uint LocalClient::BRAND = 0;
 
-Capability::Client Capability::Server::thisCap() {
-  auto& hook = KJ_REQUIRE_NONNULL(thisHook,
-      "can't call thisCap() when no Clients are currently pointing at the object");
-  return Client(hook.addRef());
-}
-
 kj::Own<ClientHook> Capability::Client::makeLocalClient(kj::Own<Capability::Server>&& server) {
-  KJ_IF_SOME(hook, server->thisHook) {
-    // Use the existing hook. This is possible when the Server object is refcounted, hence allowing
-    // `makeLocalClient()` to be called multiple times for the same Server.
-    //
-    // It's expected that the returned capability is a strong reference to the server. Therefore,
-    // we should refuse to clone a revocable Client.
-    KJ_REQUIRE(!kj::downcast<LocalClient>(hook).isRevocable(),
-        "can't create additional Clients for a Server whose existing Client is revocable");
-    return hook.addRef();
-  } else {
-    return kj::refcounted<LocalClient>(kj::mv(server));
-  }
+  return kj::refcounted<LocalClient>(kj::mv(server));
 }
 
 kj::Own<ClientHook> Capability::Client::makeRevocableLocalClient(Capability::Server& server) {
-  KJ_REQUIRE(server.thisHook == kj::none,
-      "can't create revocable Client for Server that already has Clients pointing at it");
-
   auto result = kj::refcounted<LocalClient>(
       kj::Own<Capability::Server>(&server, kj::NullDisposer::instance), true /* revocable */);
   return result;
-}
-bool Capability::Client::isLocalClientShared(ClientHook& hook) {
-  return kj::downcast<LocalClient>(hook).isShared();
-}
-void Capability::Client::revokeLocalClientIfShared(ClientHook& hook) {
-  if (kj::downcast<LocalClient>(hook).isShared()) {
-    revokeLocalClient(hook);
-  }
 }
 void Capability::Client::revokeLocalClient(ClientHook& hook) {
   revokeLocalClient(hook, KJ_EXCEPTION(FAILED,
@@ -1011,6 +991,10 @@ public:
     return AnyPointer::Pipeline(kj::refcounted<BrokenPipeline>(exception));
   }
 
+  const void* getBrand() override {
+    return nullptr;
+  }
+
   kj::Exception exception;
   MallocMessageBuilder message;
 };
@@ -1018,10 +1002,10 @@ public:
 class BrokenClient final: public ClientHook, public kj::Refcounted {
 public:
   BrokenClient(const kj::Exception& exception, bool resolved, const void* brand)
-      : ClientHook(brand), exception(exception), resolved(resolved) {}
+      : exception(exception), resolved(resolved), brand(brand) {}
   BrokenClient(const kj::StringPtr description, bool resolved, const void* brand)
-      : ClientHook(brand), exception(kj::Exception::Type::FAILED, "", 0, kj::str(description)),
-        resolved(resolved) {}
+      : exception(kj::Exception::Type::FAILED, "", 0, kj::str(description)),
+        resolved(resolved), brand(brand) {}
 
   Request<AnyPointer, AnyPointer> newCall(
       uint64_t interfaceId, uint16_t methodId, kj::Maybe<MessageSize> sizeHint,
@@ -1035,12 +1019,12 @@ public:
   }
 
   kj::Maybe<ClientHook&> getResolved() override {
-    return kj::none;
+    return nullptr;
   }
 
   kj::Maybe<kj::Promise<kj::Own<ClientHook>>> whenMoreResolved() override {
     if (resolved) {
-      return kj::none;
+      return nullptr;
     } else {
       return kj::Promise<kj::Own<ClientHook>>(kj::cp(exception));
     }
@@ -1050,13 +1034,18 @@ public:
     return kj::addRef(*this);
   }
 
+  const void* getBrand() override {
+    return brand;
+  }
+
   kj::Maybe<int> getFd() override {
-    return kj::none;
+    return nullptr;
   }
 
 private:
   kj::Exception exception;
   bool resolved;
+  const void* brand;
 };
 
 kj::Own<ClientHook> BrokenPipeline::getPipelinedCap(kj::ArrayPtr<const PipelineOp> ops) {
@@ -1123,7 +1112,7 @@ kj::Maybe<kj::Own<ClientHook>> ReaderCapabilityTable::extractCap(uint index) {
   if (index < table.size()) {
     return table[index].map([](kj::Own<ClientHook>& cap) { return cap->addRef(); });
   } else {
-    return kj::none;
+    return nullptr;
   }
 }
 
@@ -1135,7 +1124,7 @@ kj::Maybe<kj::Own<ClientHook>> BuilderCapabilityTable::extractCap(uint index) {
   if (index < table.size()) {
     return table[index].map([](kj::Own<ClientHook>& cap) { return cap->addRef(); });
   } else {
-    return kj::none;
+    return nullptr;
   }
 }
 
@@ -1149,7 +1138,7 @@ void BuilderCapabilityTable::dropCap(uint index) {
   KJ_ASSERT(index < table.size(), "Invalid capability descriptor in message.") {
     return;
   }
-  table[index] = kj::none;
+  table[index] = nullptr;
 }
 
 // =======================================================================================
@@ -1159,9 +1148,6 @@ namespace _ {  // private
 
 Capability::Client CapabilityServerSetBase::addInternal(
     kj::Own<Capability::Server>&& server, void* ptr) {
-  KJ_REQUIRE(server->thisHook == kj::none,
-      "can't add Server to CapabilityServerSet when it already has Clients pointing to it");
-
   return Capability::Client(kj::refcounted<LocalClient>(kj::mv(server), *this, ptr));
 }
 
@@ -1170,27 +1156,27 @@ kj::Promise<void*> CapabilityServerSetBase::getLocalServerInternal(Capability::C
 
   // Get the most-resolved-so-far version of the hook.
   for (;;) {
-    KJ_IF_SOME(h, hook->getResolved()) {
-      hook = &h;
+    KJ_IF_MAYBE(h, hook->getResolved()) {
+      hook = h;
     } else {
       break;
     }
   }
 
   // Try to unwrap that.
-  if (hook->isBrand(&LocalClient::BRAND)) {
-    KJ_IF_SOME(promise, kj::downcast<LocalClient>(*hook).getLocalServer(*this)) {
+  if (hook->getBrand() == &LocalClient::BRAND) {
+    KJ_IF_MAYBE(promise, kj::downcast<LocalClient>(*hook).getLocalServer(*this)) {
       // This is definitely a member of our set and will resolve to non-null. We just have to wait
       // for any existing streaming calls to complete.
-      return kj::mv(promise);
+      return kj::mv(*promise);
     }
   }
 
   // OK, the capability isn't part of this set.
-  KJ_IF_SOME(p, hook->whenMoreResolved()) {
+  KJ_IF_MAYBE(p, hook->whenMoreResolved()) {
     // This hook is an unresolved promise. It might resolve eventually to a local server, so wait
     // for it.
-    return p.attach(hook->addRef())
+    return p->attach(hook->addRef())
         .then([this](kj::Own<ClientHook>&& resolved) {
       Capability::Client client(kj::mv(resolved));
       return getLocalServerInternal(client);

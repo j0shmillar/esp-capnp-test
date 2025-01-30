@@ -24,7 +24,6 @@
 #include <string>
 #include <list>
 #include <kj/compat/gtest.h>
-#include <span>
 
 namespace kj {
 namespace {
@@ -110,11 +109,6 @@ TEST(Array, TrivialConstructor) {
 //      EXPECT_NE(chars[1], 0);
 //    }
   }
-
-  {
-    Array<char> chars = heapArray<char>(32, 'x');
-    for (char c : chars) EXPECT_EQ('x', c);
-  }
 }
 
 TEST(Array, ComplexConstructor) {
@@ -127,6 +121,8 @@ TEST(Array, ComplexConstructor) {
   }
   EXPECT_EQ(0, TestObject::count);
 }
+
+#if !KJ_NO_EXCEPTIONS
 TEST(Array, ThrowingConstructor) {
   TestObject::count = 0;
   TestObject::throwAt = 16;
@@ -148,6 +144,7 @@ TEST(Array, ThrowingDestructor) {
   EXPECT_ANY_THROW(array = nullptr);
   EXPECT_EQ(0, TestObject::count);
 }
+#endif  // !KJ_NO_EXCEPTIONS
 
 TEST(Array, AraryBuilder) {
   TestObject::count = 0;
@@ -263,6 +260,7 @@ TEST(Array, AraryBuilderAddAll) {
   EXPECT_EQ(0, TestObject::count);
   EXPECT_EQ(0, TestObject::copiedCount);
 
+#if !KJ_NO_EXCEPTIONS
   {
     // Complex case, exceptions occur.
     TestObject::count = 0;
@@ -286,6 +284,7 @@ TEST(Array, AraryBuilderAddAll) {
   }
   EXPECT_EQ(0, TestObject::count);
   EXPECT_EQ(0, TestObject::copiedCount);
+#endif  // !KJ_NO_EXCEPTIONS
 }
 
 TEST(Array, HeapCopy) {
@@ -379,6 +378,7 @@ TEST(Array, ReleaseAsBytesOrChars) {
   }
 }
 
+#if KJ_CPP_STD > 201402L
 KJ_TEST("kj::arr()") {
   kj::Array<kj::String> array = kj::arr(kj::str("foo"), kj::str(123));
   KJ_EXPECT(array == kj::ArrayPtr<const kj::StringPtr>({"foo", "123"}));
@@ -397,6 +397,7 @@ KJ_TEST("kj::arrOf()") {
   KJ_EXPECT(array[1].i == 456);
   KJ_EXPECT(array[2].i == 789);
 }
+#endif
 
 struct DestructionOrderRecorder {
   DestructionOrderRecorder(uint& counter, uint& recordTo)
@@ -512,115 +513,6 @@ TEST(Array, AttachFromArrayPtr) {
   arr = nullptr;
 
   KJ_EXPECT(destroyed1 == 3, destroyed1);
-}
-
-struct Std {
-  template<typename T>
-  static std::span<T> from(Array<T>* arr) {
-    return std::span<T>(arr->begin(), arr->size());
-  }
-};
-
-KJ_TEST("Array::as<Std>") {
-  kj::Array<int> arr = kj::arr(1, 2, 4);
-  std::span<int> stdArr = arr.as<Std>();
-  KJ_EXPECT(stdArr.size() == 3);
-}
-
-KJ_TEST("Array::slice(start, end)") {
-  kj::Array<int> arr = kj::arr(0, 1, 2, 3);
-
-  // full slice
-  KJ_EXPECT(arr.slice(0, 4) == arr);
-  // slice from only start
-  KJ_EXPECT(arr.slice(1, 4) == kj::arr(1, 2, 3));
-  // slice from only end
-  KJ_EXPECT(arr.slice(0, 3) == kj::arr(0, 1, 2));
-  // slice from start and end
-  KJ_EXPECT(arr.slice(1, 3) == kj::arr(1, 2));
-
-  // empty slices
-  for (auto i : kj::zeroTo(arr.size())) {
-    KJ_EXPECT(arr.slice(i, i).size() == 0);
-  }
-
-#ifdef KJ_DEBUG
-  // start > end
-  KJ_EXPECT_THROW(FAILED, arr.slice(2, 1));
-  // end > size
-  KJ_EXPECT_THROW(FAILED, arr.slice(2, 5));
-#endif
-}
-
-KJ_TEST("Array::slice(start, end) const") {
-  const kj::Array<int> arr = kj::arr(0, 1, 2, 3);
-
-  // full slice
-  KJ_EXPECT(arr.slice(0, 4) == arr);
-  // slice from only start
-  KJ_EXPECT(arr.slice(1, 4) == kj::arr(1, 2, 3));
-  // slice from only end
-  KJ_EXPECT(arr.slice(0, 3) == kj::arr(0, 1, 2));
-  // slice from start and end
-  KJ_EXPECT(arr.slice(1, 3) == kj::arr(1, 2));
-
-  // empty slices
-  for (auto i : kj::zeroTo(arr.size())) {
-    KJ_EXPECT(arr.slice(i, i).size() == 0);
-  }
-
-#ifdef KJ_DEBUG
-  // start > end
-  KJ_EXPECT_THROW(FAILED, arr.slice(2, 1));
-  // end > size
-  KJ_EXPECT_THROW(FAILED, arr.slice(2, 5));
-#endif
-}
-
-KJ_TEST("Array::slice(start)") {
-  kj::Array<int> arr = kj::arr(0, 1, 2, 3);
-
-  KJ_EXPECT(arr.slice(0) == arr);
-  KJ_EXPECT(arr.slice(1) == kj::arr(1, 2, 3));
-  KJ_EXPECT(arr.slice(2) == kj::arr(2, 3));
-  KJ_EXPECT(arr.slice(3) == kj::arr(3));
-  KJ_EXPECT(arr.slice(4).size() == 0);
-
-#ifdef KJ_DEBUG
-  // start > size
-  KJ_EXPECT_THROW(FAILED, arr.slice(5));
-#endif
-}
-
-KJ_TEST("Array::slice(start) const") {
-  const kj::Array<int> arr = kj::arr(0, 1, 2, 3);
-
-  KJ_EXPECT(arr.slice(0) == arr);
-  KJ_EXPECT(arr.slice(1) == kj::arr(1, 2, 3));
-  KJ_EXPECT(arr.slice(2) == kj::arr(2, 3));
-  KJ_EXPECT(arr.slice(3) == kj::arr(3));
-  KJ_EXPECT(arr.slice(4).size() == 0);
-
-#ifdef KJ_DEBUG
-  // start > size
-  KJ_EXPECT_THROW(FAILED, arr.slice(5));
-#endif
-}
-
-KJ_TEST("FixedArray::fill") {
-  FixedArray<int64_t, 10> arr;
-  arr.fill(42);
-  for (int64_t x : arr) {
-    KJ_EXPECT(x == 42);
-  }
-}
-
-KJ_TEST("CappedArray::fill") {
-  CappedArray<int64_t, 10> arr;
-  arr.fill(42);
-  for (int64_t x : arr) {
-    KJ_EXPECT(x == 42);
-  }
 }
 
 }  // namespace

@@ -138,6 +138,7 @@ public:
   // getProto() to determine type, e.g. getProto().isStruct().
 
   inline bool operator==(const Schema& other) const { return raw == other.raw; }
+  inline bool operator!=(const Schema& other) const { return raw != other.raw; }
   // Determine whether two Schemas are wrapping the exact same underlying data, by identity.  If
   // you want to check if two Schemas represent the same type (but possibly different versions of
   // it), compare their IDs instead.
@@ -341,6 +342,7 @@ public:
   // If the above does not make sense, you probably don't need this method.
 
   inline bool operator==(const Field& other) const;
+  inline bool operator!=(const Field& other) const { return !(*this == other); }
   inline uint hashCode() const;
 
 private:
@@ -439,6 +441,7 @@ public:
   inline uint getIndex() const { return ordinal; }
 
   inline bool operator==(const Enumerant& other) const;
+  inline bool operator!=(const Enumerant& other) const { return !(*this == other); }
   inline uint hashCode() const;
 
 private:
@@ -534,6 +537,7 @@ public:
   // Get the parameter and result types, including substituting generic parameters.
 
   inline bool operator==(const Method& other) const;
+  inline bool operator!=(const Method& other) const { return !(*this == other); }
   inline uint hashCode() const;
 
 private:
@@ -685,6 +689,7 @@ public:
   inline bool isAnyPointer() const;
 
   bool operator==(const Type& other) const;
+  inline bool operator!=(const Type& other) const { return !(*this == other); }
 
   uint hashCode() const;
 
@@ -747,6 +752,16 @@ public:
   static ListSchema of(Type elementType);
   // Construct the schema for a list of the given type.
 
+  static ListSchema of(schema::Type::Reader elementType, Schema context)
+      CAPNP_DEPRECATED("Does not handle generics correctly.");
+  // DEPRECATED: This method cannot correctly account for generic type parameter bindings that
+  //   may apply to the input type. Instead of using this method, use a method of the Schema API
+  //   that corresponds to the exact kind of dependency. For example, to get a field type, use
+  //   StructSchema::Field::getType().
+  //
+  // Construct from an element type schema.  Requires a context which can handle getDependency()
+  // requests for any type ID found in the schema.
+
   Type getElementType() const;
 
   inline schema::Type::Which whichElementType() const;
@@ -762,6 +777,7 @@ public:
   // type is not of the requested kind.
 
   inline bool operator==(const ListSchema& other) const { return elementType == other.elementType; }
+  inline bool operator!=(const ListSchema& other) const { return elementType != other.elementType; }
 
   template <typename T>
   void requireUsableAs() const;

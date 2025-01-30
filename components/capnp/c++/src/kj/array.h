@@ -159,27 +159,29 @@ public:
     return ArrayPtr<T>(ptr, size_);
   }
 
-  inline constexpr size_t size() const { return size_; }
-  inline constexpr T& operator[](size_t index) KJ_LIFETIMEBOUND {
+  inline size_t size() const { return size_; }
+  inline T& operator[](size_t index) KJ_LIFETIMEBOUND {
     KJ_IREQUIRE(index < size_, "Out-of-bounds Array access.");
     return ptr[index];
   }
-  inline constexpr const T& operator[](size_t index) const KJ_LIFETIMEBOUND {
+  inline const T& operator[](size_t index) const KJ_LIFETIMEBOUND {
     KJ_IREQUIRE(index < size_, "Out-of-bounds Array access.");
     return ptr[index];
   }
 
-  inline constexpr const T* begin() const KJ_LIFETIMEBOUND { return ptr; }
-  inline constexpr const T* end() const KJ_LIFETIMEBOUND { return ptr + size_; }
-  inline constexpr const T& front() const KJ_LIFETIMEBOUND { return *ptr; }
-  inline constexpr const T& back() const KJ_LIFETIMEBOUND { return *(ptr + size_ - 1); }
-  inline constexpr T* begin() KJ_LIFETIMEBOUND { return ptr; }
-  inline constexpr T* end() KJ_LIFETIMEBOUND { return ptr + size_; }
-  inline constexpr T& front() KJ_LIFETIMEBOUND { return *ptr; }
-  inline constexpr T& back() KJ_LIFETIMEBOUND { return *(ptr + size_ - 1); }
+  inline const T* begin() const KJ_LIFETIMEBOUND { return ptr; }
+  inline const T* end() const KJ_LIFETIMEBOUND { return ptr + size_; }
+  inline const T& front() const KJ_LIFETIMEBOUND { return *ptr; }
+  inline const T& back() const KJ_LIFETIMEBOUND { return *(ptr + size_ - 1); }
+  inline T* begin() KJ_LIFETIMEBOUND { return ptr; }
+  inline T* end() KJ_LIFETIMEBOUND { return ptr + size_; }
+  inline T& front() KJ_LIFETIMEBOUND { return *ptr; }
+  inline T& back() KJ_LIFETIMEBOUND { return *(ptr + size_ - 1); }
 
   template <typename U>
   inline bool operator==(const U& other) const { return asPtr() == other; }
+  template <typename U>
+  inline bool operator!=(const U& other) const { return asPtr() != other; }
 
   inline ArrayPtr<T> slice(size_t start, size_t end) KJ_LIFETIMEBOUND {
     KJ_IREQUIRE(start <= end && end <= size_, "Out-of-bounds Array::slice().");
@@ -189,17 +191,6 @@ public:
     KJ_IREQUIRE(start <= end && end <= size_, "Out-of-bounds Array::slice().");
     return ArrayPtr<const T>(ptr + start, end - start);
   }
-  inline ArrayPtr<T> slice(size_t start) KJ_LIFETIMEBOUND {
-    KJ_IREQUIRE(start <= size_, "Out-of-bounds ArrayPtr::slice().");
-    return ArrayPtr<T>(ptr + start, size_ - start);
-  }
-  inline ArrayPtr<const T> slice(size_t start) const KJ_LIFETIMEBOUND {
-    KJ_IREQUIRE(start <= size_, "Out-of-bounds ArrayPtr::slice().");
-    return ArrayPtr<const T>(ptr + start, size_ - start);
-  }
-
-  inline ArrayPtr<T> first(size_t count) KJ_LIFETIMEBOUND { return slice(0, count); }
-  inline ArrayPtr<const T> first(size_t count) const KJ_LIFETIMEBOUND { return slice(0, count); }
 
   inline ArrayPtr<const byte> asBytes() const KJ_LIFETIMEBOUND { return asPtr().asBytes(); }
   inline ArrayPtr<PropagateConst<T, byte>> asBytes() KJ_LIFETIMEBOUND { return asPtr().asBytes(); }
@@ -210,7 +201,6 @@ public:
     // Like asBytes() but transfers ownership.
     static_assert(sizeof(T) == sizeof(byte),
         "releaseAsBytes() only possible on arrays with byte-size elements (e.g. chars).");
-    if (disposer == nullptr) return nullptr;
     Array<PropagateConst<T, byte>> result(
         reinterpret_cast<PropagateConst<T, byte>*>(ptr), size_, *disposer);
     ptr = nullptr;
@@ -221,7 +211,6 @@ public:
     // Like asChars() but transfers ownership.
     static_assert(sizeof(T) == sizeof(PropagateConst<T, char>),
         "releaseAsChars() only possible on arrays with char-size elements (e.g. bytes).");
-    if (disposer == nullptr) return nullptr;
     Array<PropagateConst<T, char>> result(
         reinterpret_cast<PropagateConst<T, char>*>(ptr), size_, *disposer);
     ptr = nullptr;
@@ -230,6 +219,7 @@ public:
   }
 
   inline bool operator==(decltype(nullptr)) const { return size_ == 0; }
+  inline bool operator!=(decltype(nullptr)) const { return size_ != 0; }
 
   inline Array& operator=(decltype(nullptr)) {
     dispose();
@@ -249,11 +239,6 @@ public:
   template <typename... Attachments>
   Array<T> attach(Attachments&&... attachments) KJ_WARN_UNUSED_RESULT;
   // Like Own<T>::attach(), but attaches to an Array.
-
-  template <typename U>
-  inline auto as() { return U::from(this); }
-  // Syntax sugar for invoking U::from.
-  // Used to chain conversion calls rather than wrap with function.
 
 private:
   T* ptr;
@@ -321,15 +306,6 @@ template <typename T> Array<T> heapArray(ArrayPtr<const T> content);
 template <typename T, typename Iterator> Array<T> heapArray(Iterator begin, Iterator end);
 template <typename T> Array<T> heapArray(std::initializer_list<T> init);
 // Allocate a heap array containing a copy of the given content.
-
-template <typename T, typename = EnableIf<KJ_HAS_TRIVIAL_CONSTRUCTOR(T)>>
-inline Array<T> heapArray(size_t size, T t) {
-  // Allocate array pre-filled with t.
-  // TODO: implement for complex T types without creating `size` instances first.
-  Array<T> array = heapArray<T>(size);
-  array.asPtr().fill(t);
-  return array;
-}
 
 template <typename T, typename Container>
 Array<T> heapArrayFromIterable(Container&& a) { return heapArray<T>(a.begin(), a.end()); }
@@ -442,9 +418,7 @@ public:
 
     T* target = ptr + size;
     if (KJ_HAS_TRIVIAL_DESTRUCTOR(T)) {
-      // const_cast is safe here because the member won't ever be dereferenced because it 
-      // points to the end of the segment.
-      pos = const_cast<RemoveConst<T>*>(target);
+      pos = target;
     } else {
       while (pos > target) {
         kj::dtor(*--pos);
@@ -454,9 +428,7 @@ public:
 
   void clear() {
     if (KJ_HAS_TRIVIAL_DESTRUCTOR(T)) {
-      // const_cast is safe here because the member won't ever be dereferenced because it 
-      // points to the end of the segment.
-      pos = const_cast<RemoveConst<T>*>(ptr);
+      pos = ptr;
     } else {
       while (pos > ptr) {
         kj::dtor(*--pos);
@@ -471,9 +443,7 @@ public:
     if (target > pos) {
       // expand
       if (KJ_HAS_TRIVIAL_CONSTRUCTOR(T)) {
-        // const_cast is safe here because the member won't ever be dereferenced because it 
-        // points to the end of the segment.
-        pos = const_cast<RemoveConst<T>*>(target);
+        pos = target;
       } else {
         while (pos < target) {
           kj::ctor(*pos++);
@@ -482,9 +452,7 @@ public:
     } else {
       // truncate
       if (KJ_HAS_TRIVIAL_DESTRUCTOR(T)) {
-        // const_cast is safe here because the member won't ever be dereferenced because it 
-        // points to the end of the segment.
-        pos = const_cast<RemoveConst<T>*>(target);
+        pos = target;
       } else {
         while (pos > target) {
           kj::dtor(*--pos);
@@ -556,13 +524,10 @@ public:
   inline constexpr const T* begin() const KJ_LIFETIMEBOUND { return content; }
   inline constexpr const T* end() const KJ_LIFETIMEBOUND { return content + fixedSize; }
 
-  inline constexpr operator ArrayPtr<T>() KJ_LIFETIMEBOUND { return asPtr(); }
-  inline constexpr operator ArrayPtr<const T>() const KJ_LIFETIMEBOUND { return asPtr(); }
-
-  inline constexpr ArrayPtr<T> asPtr() KJ_LIFETIMEBOUND {
+  inline constexpr operator ArrayPtr<T>() KJ_LIFETIMEBOUND {
     return arrayPtr(content, fixedSize);
   }
-  inline constexpr ArrayPtr<const T> asPtr() const KJ_LIFETIMEBOUND {
+  inline constexpr operator ArrayPtr<const T>() const KJ_LIFETIMEBOUND {
     return arrayPtr(content, fixedSize);
   }
 
@@ -570,8 +535,6 @@ public:
   inline constexpr const T& operator[](size_t index) const KJ_LIFETIMEBOUND {
     return content[index];
   }
-
-  inline void fill(T t) { asPtr().fill(t); }
 
 private:
   T content[fixedSize];
@@ -595,15 +558,15 @@ public:
   inline const T* begin() const KJ_LIFETIMEBOUND { return content; }
   inline const T* end() const KJ_LIFETIMEBOUND { return content + currentSize; }
 
-  inline operator ArrayPtr<T>() KJ_LIFETIMEBOUND { return asPtr(); }
-  inline operator ArrayPtr<const T>() const KJ_LIFETIMEBOUND { return asPtr(); }
-  inline ArrayPtr<T> asPtr() KJ_LIFETIMEBOUND { return arrayPtr(content, currentSize); }
-  inline ArrayPtr<const T> asPtr() const KJ_LIFETIMEBOUND { return arrayPtr(content, currentSize); }
+  inline operator ArrayPtr<T>() KJ_LIFETIMEBOUND {
+    return arrayPtr(content, currentSize);
+  }
+  inline operator ArrayPtr<const T>() const KJ_LIFETIMEBOUND {
+    return arrayPtr(content, currentSize);
+  }
 
   inline T& operator[](size_t index) KJ_LIFETIMEBOUND { return content[index]; }
   inline const T& operator[](size_t index) const KJ_LIFETIMEBOUND { return content[index]; }
-
-  inline void fill(T t) { asPtr().fill(t); }
 
 private:
   size_t currentSize;
@@ -817,7 +780,7 @@ struct CopyConstructArray_<T, Iterator, true, false> {
 
   static T* apply(T* __restrict__ pos, Iterator start, Iterator end) {
     // Verify that T can be *implicitly* constructed from the source values.
-    if (false) (void)implicitCast<T>(kj::mv(*start));
+    if (false) implicitCast<T>(kj::mv(*start));
 
     if (noexcept(T(kj::mv(*start)))) {
       while (start != end) {
@@ -885,6 +848,7 @@ inline Array<T> heapArray(std::initializer_list<T> init) {
   return heapArray<T>(init.begin(), init.end());
 }
 
+#if KJ_CPP_STD > 201402L
 template <typename T, typename... Params>
 inline Array<Decay<T>> arr(T&& param1, Params&&... params) {
   ArrayBuilder<Decay<T>> builder = heapArrayBuilder<Decay<T>>(sizeof...(params) + 1);
@@ -897,6 +861,7 @@ inline Array<Decay<T>> arrOf(Params&&... params) {
   (... , builder.add(kj::fwd<Params>(params)));
   return builder.finish();
 }
+#endif
 
 namespace _ {  // private
 

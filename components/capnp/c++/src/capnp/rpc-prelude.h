@@ -40,9 +40,6 @@ class RpcSystem;
 
 namespace _ {  // private
 
-[[noreturn]] void throwNo3ph();
-// Throws an exception indicating that the VatNetwork does not support three-party handoff.
-
 class VatNetworkBase {
   // Non-template version of VatNetwork.  Ignore this class; see VatNetwork in rpc.h.
 
@@ -62,28 +59,14 @@ public:
     virtual kj::Promise<void> shutdown() = 0;
     virtual AnyStruct::Reader baseGetPeerVatId() = 0;
     virtual kj::Own<RpcFlowController> newStream() = 0;
-    virtual void setIdle(bool idle) = 0;
-
-    virtual bool canIntroduceTo(Connection& other) = 0;
-    virtual void introduceTo(Connection& other,
-        AnyPointer::Builder otherContactInfo,
-        AnyPointer::Builder thisAwaitInfo) = 0;
-    virtual kj::Maybe<kj::Own<Connection>> connectToIntroduced(
-        AnyPointer::Reader contact,
-        AnyPointer::Builder completion) = 0;
-    virtual bool canForwardThirdPartyToContact(
-        AnyPointer::Reader contact, Connection& destination) = 0;
-    virtual void forwardThirdPartyToContact(
-        AnyPointer::Reader contact, Connection& destination,
-        AnyPointer::Builder result) = 0;
-    virtual kj::Own<void> awaitThirdParty(
-        AnyPointer::Reader party, kj::Rc<kj::Refcounted> value) = 0;
-    virtual kj::Promise<kj::Rc<kj::Refcounted>> completeThirdParty(
-        AnyPointer::Reader completion) = 0;
-    virtual kj::Array<byte> generateEmbargoId() = 0;
   };
   virtual kj::Maybe<kj::Own<Connection>> baseConnect(AnyStruct::Reader vatId) = 0;
   virtual kj::Promise<kj::Own<Connection>> baseAccept() = 0;
+};
+
+class SturdyRefRestorerBase {
+public:
+  virtual Capability::Client baseRestore(AnyPointer::Reader ref) = 0;
 };
 
 class BootstrapFactoryBase {
@@ -98,6 +81,7 @@ class RpcSystemBase {
 public:
   RpcSystemBase(VatNetworkBase& network, kj::Maybe<Capability::Client> bootstrapInterface);
   RpcSystemBase(VatNetworkBase& network, BootstrapFactoryBase& bootstrapFactory);
+  RpcSystemBase(VatNetworkBase& network, SturdyRefRestorerBase& restorer);
   RpcSystemBase(RpcSystemBase&& other) noexcept;
   ~RpcSystemBase() noexcept(false);
 
@@ -110,18 +94,8 @@ private:
   kj::Own<Impl> impl;
 
   Capability::Client baseBootstrap(AnyStruct::Reader vatId);
+  Capability::Client baseRestore(AnyStruct::Reader vatId, AnyPointer::Reader objectId);
   void baseSetFlowLimit(size_t words);
-
-  class RpcConnectionState;
-
-  static void dropConnection(Impl& impl,
-      VatNetworkBase::Connection& connection, kj::Promise<void> shutdownTask);
-  // Called when RpcConnectionState becomes disconnected and so should be removed from the map of
-  // known connections.
-  //
-  // TODO(cleanup): This is defined as a static method with `Impl&` passed in because the caller
-  //   is defined before `Impl` in rpc.c++. We can't have the caller hold a pointer to
-  //   `RpcSystemBase` instead because it is movable.
 
   template <typename>
   friend class capnp::RpcSystem;

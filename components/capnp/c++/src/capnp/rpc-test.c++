@@ -26,12 +26,20 @@
 #include "schema.h"
 #include "serialize.h"
 #include <kj/debug.h>
-#include <kj/function.h>
 #include <kj/string-tree.h>
+#include <kj/compat/gtest.h>
 #include <capnp/rpc.capnp.h>
-#include <kj/async-queue.h>
-#include <kj/map.h>
-#include <kj/miniposix.h>
+#include <map>
+#include <queue>
+
+// TODO(cleanup): Auto-generate stringification functions for union discriminants.
+namespace capnp {
+namespace rpc {
+inline kj::String KJ_STRINGIFY(Message::Which which) {
+  return kj::str(static_cast<uint16_t>(which));
+}
+}  // namespace rpc
+}  // namespace capnp
 
 namespace capnp {
 namespace _ {  // private
@@ -46,160 +54,113 @@ class RpcDumper {
 
 public:
   void addSchema(InterfaceSchema schema) {
-    schemas.insert(schema.getProto().getId(), schema);
+    schemas[schema.getProto().getId()] = schema;
   }
 
-  class Sender {
-  public:
-    explicit Sender(RpcDumper& parent, kj::StringPtr name)
-        : parent(parent), name(name) {}
-
-    ~Sender() noexcept(false) {
-      KJ_IF_SOME(p, partner) {
-        p.partner = kj::none;
-      }
-    }
-
-    void setPartner(Sender& p) {
-      partner = p;
-      p.partner = *this;
-      partnerName = p.name;
-      p.partnerName = name;
-    }
-
-    void dump(rpc::Message::Reader message) {
-      kj::FdOutputStream(STDOUT_FILENO).write(dumpStr(message).asBytes());
-    }
-
-    kj::String dumpStr(rpc::Message::Reader message) {
-      switch (message.which()) {
-        case rpc::Message::CALL: {
-          auto call = message.getCall();
-          InterfaceSchema schema;
-          KJ_IF_SOME(s, parent.schemas.find(call.getInterfaceId())) {
-            schema = s;
-          } else {
-            break;
-          }
-          auto methods = schema.getMethods();
-          if (call.getMethodId() >= methods.size()) {
-            break;
-          }
-          InterfaceSchema::Method method = methods[call.getMethodId()];
-
-          auto schemaProto = schema.getProto();
-          auto interfaceName =
-              schemaProto.getDisplayName().slice(schemaProto.getDisplayNamePrefixLength());
-
-          auto methodProto = method.getProto();
-          auto paramType = method.getParamType();
-          auto resultType = method.getResultType();
-
-          if (call.getSendResultsTo().isCaller()) {
-            KJ_IF_SOME(p, partner) {
-              p.returnTypes.insert(call.getQuestionId(), resultType);
-            }
-          }
-
-          auto payload = call.getParams();
-
-          auto capTable = payload.getCapTable();
-          ReaderCapabilityTable capTableReader(
-              KJ_MAP(i, kj::range(0, capTable.size())) -> kj::Maybe<kj::Own<ClientHook>> {
-            return newBrokenCap("fake");
-          });
-
-          auto params = capTableReader.imbue(payload.getContent()).getAs<DynamicStruct>(paramType);
-
-          auto sendResultsTo = call.getSendResultsTo();
-
-          return kj::str(name, "->", partnerName, ": call ", call.getQuestionId(), ": ",
-                         call.getTarget(), " <- ", interfaceName, ".",
-                         methodProto.getName(), params,
-                         " caps:[", kj::strArray(capTable, ", "), "]",
-                         sendResultsTo.isCaller() ? kj::str()
-                                                  : kj::str(" sendResultsTo:", sendResultsTo),
-                         '\n');
-        }
-
-        case rpc::Message::RETURN: {
-          auto ret = message.getReturn();
-
-          Schema schema;
-          KJ_IF_SOME(entry, returnTypes.findEntry(ret.getAnswerId())) {
-            schema = entry.value;
-            returnTypes.erase(entry);
-          } else {
-            break;
-          }
-
-          if (ret.which() != rpc::Return::RESULTS) {
-            // Oops, no results returned.  We don't check this earlier because we want to make sure
-            // returnTypes.erase() gets a chance to happen.
-            break;
-          }
-
-          auto payload = ret.getResults();
-
-          auto capTable = payload.getCapTable();
-          ReaderCapabilityTable capTableReader(
-              KJ_MAP(i, kj::range(0, capTable.size())) -> kj::Maybe<kj::Own<ClientHook>> {
-            return newBrokenCap("fake");
-          });
-
-          auto content = capTableReader.imbue(payload.getContent());
-
-          if (schema.getProto().isStruct()) {
-            auto results = content.getAs<DynamicStruct>(schema.asStruct());
-
-            return kj::str(name, "->", partnerName, ": return ", ret.getAnswerId(), ": ", results,
-                           " caps:[", kj::strArray(capTable, ", "), "]");
-          } else if (schema.getProto().isInterface()) {
-            content.getAs<DynamicCapability>(schema.asInterface());
-            return kj::str(name, "->", partnerName, "(", ret.getAnswerId(), "): return cap ",
-                           kj::strArray(capTable, ", "), '\n');
-          } else {
-            break;
-          }
-        }
-
-        case rpc::Message::BOOTSTRAP: {
-          auto restore = message.getBootstrap();
-
-          KJ_IF_SOME(p, partner) {
-            p.returnTypes.insert(restore.getQuestionId(), InterfaceSchema());
-          }
-
-          return kj::str(name, "->", partnerName, "(", restore.getQuestionId(), "): bootstrap\n");
-        }
-
-        default:
-          break;
-      }
-
-      return kj::str(name, "->", partnerName, ": ", message, '\n');
-    }
-
-  private:
-    RpcDumper& parent;
-    kj::StringPtr name;
-
-    kj::Maybe<Sender&> partner;
-    kj::StringPtr partnerName;
-    // `Sender` representing the opposite direction of the same stream.
-
-    kj::HashMap<uint32_t, Schema> returnTypes;
-    // Maps answer IDs to expected return types. Partner populates this when sending the
-    // corresponding `Call`.
+  enum Sender {
+    CLIENT,
+    SERVER
   };
 
+  kj::String dump(rpc::Message::Reader message, Sender sender) {
+    const char* senderName = sender == CLIENT ? "client" : "server";
+
+    switch (message.which()) {
+      case rpc::Message::CALL: {
+        auto call = message.getCall();
+        auto iter = schemas.find(call.getInterfaceId());
+        if (iter == schemas.end()) {
+          break;
+        }
+        InterfaceSchema schema = iter->second;
+        auto methods = schema.getMethods();
+        if (call.getMethodId() >= methods.size()) {
+          break;
+        }
+        InterfaceSchema::Method method = methods[call.getMethodId()];
+
+        auto schemaProto = schema.getProto();
+        auto interfaceName =
+            schemaProto.getDisplayName().slice(schemaProto.getDisplayNamePrefixLength());
+
+        auto methodProto = method.getProto();
+        auto paramType = method.getParamType();
+        auto resultType = method.getResultType();
+
+        if (call.getSendResultsTo().isCaller()) {
+          returnTypes[std::make_pair(sender, call.getQuestionId())] = resultType;
+        }
+
+        auto payload = call.getParams();
+        auto params = kj::str(payload.getContent().getAs<DynamicStruct>(paramType));
+
+        auto sendResultsTo = call.getSendResultsTo();
+
+        return kj::str(senderName, "(", call.getQuestionId(), "): call ",
+                       call.getTarget(), " <- ", interfaceName, ".",
+                       methodProto.getName(), params,
+                       " caps:[", kj::strArray(payload.getCapTable(), ", "), "]",
+                       sendResultsTo.isCaller() ? kj::str()
+                                                : kj::str(" sendResultsTo:", sendResultsTo));
+      }
+
+      case rpc::Message::RETURN: {
+        auto ret = message.getReturn();
+
+        auto iter = returnTypes.find(
+            std::make_pair(sender == CLIENT ? SERVER : CLIENT, ret.getAnswerId()));
+        if (iter == returnTypes.end()) {
+          break;
+        }
+
+        auto schema = iter->second;
+        returnTypes.erase(iter);
+        if (ret.which() != rpc::Return::RESULTS) {
+          // Oops, no results returned.  We don't check this earlier because we want to make sure
+          // returnTypes.erase() gets a chance to happen.
+          break;
+        }
+
+        auto payload = ret.getResults();
+
+        if (schema.getProto().isStruct()) {
+          auto results = kj::str(payload.getContent().getAs<DynamicStruct>(schema.asStruct()));
+
+          return kj::str(senderName, "(", ret.getAnswerId(), "): return ", results,
+                         " caps:[", kj::strArray(payload.getCapTable(), ", "), "]");
+        } else if (schema.getProto().isInterface()) {
+          payload.getContent().getAs<DynamicCapability>(schema.asInterface());
+          return kj::str(senderName, "(", ret.getAnswerId(), "): return cap ",
+                         kj::strArray(payload.getCapTable(), ", "));
+        } else {
+          break;
+        }
+      }
+
+      case rpc::Message::BOOTSTRAP: {
+        auto restore = message.getBootstrap();
+
+        returnTypes[std::make_pair(sender, restore.getQuestionId())] = InterfaceSchema();
+
+        return kj::str(senderName, "(", restore.getQuestionId(), "): bootstrap ",
+                       restore.getDeprecatedObjectId().getAs<test::TestSturdyRefObjectId>());
+      }
+
+      default:
+        break;
+    }
+
+    return kj::str(senderName, ": ", message);
+  }
+
 private:
-  kj::HashMap<uint64_t, InterfaceSchema> schemas;
+  std::map<uint64_t, InterfaceSchema> schemas;
+  std::map<std::pair<Sender, uint32_t>, Schema> returnTypes;
 };
 
 // =======================================================================================
 
-class TestVat;
+class TestNetworkAdapter;
 
 class TestNetwork {
 public:
@@ -214,35 +175,35 @@ public:
   }
   ~TestNetwork() noexcept(false);
 
-  TestVat& add(kj::StringPtr name);
+  TestNetworkAdapter& add(kj::StringPtr name);
 
-  kj::Maybe<TestVat&> find(kj::StringPtr name) {
-    KJ_IF_SOME(vat, map.find(name)) {
-      return *vat;
+  kj::Maybe<TestNetworkAdapter&> find(kj::StringPtr name) {
+    auto iter = map.find(name);
+    if (iter == map.end()) {
+      return nullptr;
     } else {
-      return kj::none;
+      return *iter->second;
     }
   }
 
   RpcDumper dumper;
 
 private:
-  kj::HashMap<kj::StringPtr, kj::Own<TestVat>> map;
+  std::map<kj::StringPtr, kj::Own<TestNetworkAdapter>> map;
 };
 
 typedef VatNetwork<
-    test::TestSturdyRefHostId, test::TestThirdPartyCompletion, test::TestThirdPartyToAwait,
-    test::TestThirdPartyToContact, test::TestJoinResult> TestVatBase;
+    test::TestSturdyRefHostId, test::TestProvisionId, test::TestRecipientId,
+    test::TestThirdPartyCapId, test::TestJoinResult> TestNetworkAdapterBase;
 
-class TestVat final: public TestVatBase {
+class TestNetworkAdapter final: public TestNetworkAdapterBase {
 public:
-  TestVat(TestNetwork& network, kj::StringPtr self)
-      : network(network), self(self) {}
+  TestNetworkAdapter(TestNetwork& network, kj::StringPtr self): network(network), self(self) {}
 
-  ~TestVat() {
+  ~TestNetworkAdapter() {
     kj::Exception exception = KJ_EXCEPTION(FAILED, "Network was destroyed.");
     for (auto& entry: connections) {
-      entry.value->disconnect(kj::cp(exception));
+      entry.second->disconnect(kj::cp(exception));
     }
   }
 
@@ -255,45 +216,29 @@ public:
     sendCallback = kj::mv(callback);
   }
 
-  typedef TestVatBase::Connection Connection;
+  typedef TestNetworkAdapterBase::Connection Connection;
 
   class ConnectionImpl final
       : public Connection, public kj::Refcounted, public kj::TaskSet::ErrorHandler {
   public:
-    ConnectionImpl(TestVat& vat, TestVat& peerVat, kj::StringPtr name)
-        : vat(vat), peerVat(peerVat), dumper(vat.network.dumper, name),
-          tasks(kj::heap<kj::TaskSet>(*this)) {
-      vat.connections.insert(&peerVat, this);
-    }
-
-    ~ConnectionImpl() noexcept(false) {
-      KJ_IF_SOME(p, partner) {
-        p.partner = kj::none;
-      }
-      vat.connections.erase(&peerVat);
-    }
-
-    bool isIdle() { return idle; }
+    ConnectionImpl(TestNetworkAdapter& network, RpcDumper::Sender sender)
+        : network(network), sender(sender), tasks(kj::heap<kj::TaskSet>(*this)) {}
 
     void attach(ConnectionImpl& other) {
-      KJ_REQUIRE(partner == kj::none);
-      KJ_REQUIRE(other.partner == kj::none);
+      KJ_REQUIRE(partner == nullptr);
+      KJ_REQUIRE(other.partner == nullptr);
       partner = other;
       other.partner = *this;
-      dumper.setPartner(other.dumper);
-    }
-
-    void initiateIdleShutdown() {
-      initiatedIdleShutdown = true;
-      messageQueue.push(kj::none);
-      KJ_IF_SOME(f, fulfillOnEnd) {
-        f->fulfill();
-      }
     }
 
     void disconnect(kj::Exception&& exception) {
-      messageQueue.rejectAll(kj::cp(exception));
+      while (!fulfillers.empty()) {
+        fulfillers.front()->reject(kj::cp(exception));
+        fulfillers.pop();
+      }
+
       networkException = kj::mv(exception);
+
       tasks = nullptr;
     }
 
@@ -327,25 +272,33 @@ public:
       }
 
       void send() override {
-        KJ_EXPECT(!connection.idle);
-        if (!connection.vat.sendCallback(message)) return;
+        if (!connection.network.sendCallback(message)) return;
 
-        if (connection.networkException != kj::none) {
+        if (connection.networkException != nullptr) {
           return;
         }
 
-        ++connection.vat.sent;
+        ++connection.network.sent;
 
         // Uncomment to get a debug dump.
-//        connection.dumper.dump(message.getRoot<rpc::Message>());
+//        kj::String msg = connection.network.network.dumper.dump(
+//            message.getRoot<rpc::Message>(), connection.sender);
+//        KJ_ DBG(msg);
 
         auto incomingMessage = kj::heap<IncomingRpcMessageImpl>(messageToFlatArray(message));
 
         auto connectionPtr = &connection;
         connection.tasks->add(kj::evalLater(
             [connectionPtr,message=kj::mv(incomingMessage)]() mutable {
-          KJ_IF_SOME(p, connectionPtr->partner) {
-            p.messageQueue.push(kj::Own<IncomingRpcMessage>(kj::mv(message)));
+          KJ_IF_MAYBE(p, connectionPtr->partner) {
+            if (p->fulfillers.empty()) {
+              p->messages.push(kj::mv(message));
+            } else {
+              ++p->network.received;
+              p->fulfillers.front()->fulfill(
+                  kj::Own<IncomingRpcMessage>(kj::mv(message)));
+              p->fulfillers.pop();
+            }
           }
         }));
       }
@@ -365,61 +318,37 @@ public:
     }
 
     kj::Own<OutgoingRpcMessage> newOutgoingMessage(uint firstSegmentWordSize) override {
-      KJ_EXPECT(!idle);
       return kj::heap<OutgoingRpcMessageImpl>(*this, firstSegmentWordSize);
     }
     kj::Promise<kj::Maybe<kj::Own<IncomingRpcMessage>>> receiveIncomingMessage() override {
-      KJ_IF_SOME(e, networkException) {
-        kj::throwFatalException(kj::cp(e));
+      KJ_IF_MAYBE(e, networkException) {
+        return kj::cp(*e);
       }
 
-      if (initiatedIdleShutdown) {
-        co_return kj::none;
-      }
-
-      auto result = co_await messageQueue.pop();
-
-      if (result == kj::none) {
-        KJ_IF_SOME(f, fulfillOnEnd) {
-          f->fulfill();
+      if (messages.empty()) {
+        KJ_IF_MAYBE(f, fulfillOnEnd) {
+          f->get()->fulfill();
+          return kj::Maybe<kj::Own<IncomingRpcMessage>>(nullptr);
+        } else {
+          auto paf = kj::newPromiseAndFulfiller<kj::Maybe<kj::Own<IncomingRpcMessage>>>();
+          fulfillers.push(kj::mv(paf.fulfiller));
+          return kj::mv(paf.promise);
         }
       } else {
-        ++vat.received;
+        ++network.received;
+        auto result = kj::mv(messages.front());
+        messages.pop();
+        return kj::Maybe<kj::Own<IncomingRpcMessage>>(kj::mv(result));
       }
-
-      co_return result;
     }
     kj::Promise<void> shutdown() override {
-      KJ_IF_SOME(e, vat.shutdownExceptionToThrow) {
-        return kj::cp(e);
-      }
-      KJ_IF_SOME(p, partner) {
-        if (p.initiatedIdleShutdown) {
-          // Partner already initiated shutdown so don't wait for it to call
-          // receiveIncomingMessage() again (it won't).
-          return kj::READY_NOW;
-        }
-
-        // Make sure partner receives EOF. We have to evalLater() because
-        // OutgoingMessageImpl::send() also does that and we need to deliver in order.
-        return kj::evalLater([this]() -> kj::Promise<void> {
-          KJ_IF_SOME(p, partner) {
-            p.messageQueue.push(kj::none);
-            auto paf = kj::newPromiseAndFulfiller<void>();
-            p.fulfillOnEnd = kj::mv(paf.fulfiller);
-            return kj::mv(paf.promise);
-          } else {
-            return kj::READY_NOW;
-          }
-        });
+      KJ_IF_MAYBE(p, partner) {
+        auto paf = kj::newPromiseAndFulfiller<void>();
+        p->fulfillOnEnd = kj::mv(paf.fulfiller);
+        return kj::mv(paf.promise);
       } else {
         return kj::READY_NOW;
       }
-    }
-
-    void setIdle(bool idle) override {
-      KJ_REQUIRE(idle != this->idle);
-      this->idle = idle;
     }
 
     void taskFailed(kj::Exception&& exception) override {
@@ -427,54 +356,57 @@ public:
     }
 
   private:
-    TestVat& vat;
-    TestVat& peerVat;
-    RpcDumper::Sender dumper;
+    TestNetworkAdapter& network;
+    RpcDumper::Sender sender KJ_UNUSED_MEMBER;
     kj::Maybe<ConnectionImpl&> partner;
 
     kj::Maybe<kj::Exception> networkException;
 
-    kj::ProducerConsumerQueue<kj::Maybe<kj::Own<IncomingRpcMessage>>> messageQueue;
+    std::queue<kj::Own<kj::PromiseFulfiller<kj::Maybe<kj::Own<IncomingRpcMessage>>>>> fulfillers;
+    std::queue<kj::Own<IncomingRpcMessage>> messages;
     kj::Maybe<kj::Own<kj::PromiseFulfiller<void>>> fulfillOnEnd;
-
-    bool idle = true;
-    bool initiatedIdleShutdown = false;
 
     kj::Own<kj::TaskSet> tasks;
   };
 
   kj::Maybe<kj::Own<Connection>> connect(test::TestSturdyRefHostId::Reader hostId) override {
     if (hostId.getHost() == self) {
-      return kj::none;
+      return nullptr;
     }
 
-    TestVat& dst = KJ_REQUIRE_NONNULL(network.find(hostId.getHost()));
+    TestNetworkAdapter& dst = KJ_REQUIRE_NONNULL(network.find(hostId.getHost()));
 
-    KJ_IF_SOME(conn, connections.find(&dst)) {
-      return kj::Own<Connection>(kj::addRef(*conn));
-    } else {
-      auto local = kj::refcounted<ConnectionImpl>(*this, dst, self);
-      auto remote = kj::refcounted<ConnectionImpl>(dst, *this, dst.self);
+    auto iter = connections.find(&dst);
+    if (iter == connections.end()) {
+      auto local = kj::refcounted<ConnectionImpl>(*this, RpcDumper::CLIENT);
+      auto remote = kj::refcounted<ConnectionImpl>(dst, RpcDumper::SERVER);
       local->attach(*remote);
 
-      dst.acceptQueue.push(kj::mv(remote));
+      connections[&dst] = kj::addRef(*local);
+      dst.connections[this] = kj::addRef(*remote);
+
+      if (dst.fulfillerQueue.empty()) {
+        dst.connectionQueue.push(kj::mv(remote));
+      } else {
+        dst.fulfillerQueue.front()->fulfill(kj::mv(remote));
+        dst.fulfillerQueue.pop();
+      }
+
       return kj::Own<Connection>(kj::mv(local));
+    } else {
+      return kj::Own<Connection>(kj::addRef(*iter->second));
     }
   }
 
   kj::Promise<kj::Own<Connection>> accept() override {
-    return acceptQueue.pop();
-  }
-
-  void setShutdownExceptionToThrow(kj::Exception&& e) {
-    shutdownExceptionToThrow = kj::mv(e);
-  }
-
-  kj::Maybe<ConnectionImpl&> getConnectionTo(TestVat& other) {
-    KJ_IF_SOME(conn, connections.find(&other)) {
-      return *conn;
+    if (connectionQueue.empty()) {
+      auto paf = kj::newPromiseAndFulfiller<kj::Own<Connection>>();
+      fulfillerQueue.push(kj::mv(paf.fulfiller));
+      return kj::mv(paf.promise);
     } else {
-      return kj::none;
+      auto result = kj::mv(connectionQueue.front());
+      connectionQueue.pop();
+      return kj::mv(result);
     }
   }
 
@@ -483,31 +415,44 @@ private:
   kj::StringPtr self;
   uint sent = 0;
   uint received = 0;
-  kj::Maybe<kj::Exception> shutdownExceptionToThrow = kj::none;
 
-  kj::HashMap<const TestVat*, ConnectionImpl*> connections;
-  kj::ProducerConsumerQueue<kj::Own<Connection>> acceptQueue;
+  std::map<const TestNetworkAdapter*, kj::Own<ConnectionImpl>> connections;
+  std::queue<kj::Own<kj::PromiseFulfiller<kj::Own<Connection>>>> fulfillerQueue;
+  std::queue<kj::Own<Connection>> connectionQueue;
 
   kj::Function<bool(MessageBuilder& message)> sendCallback = [](MessageBuilder&) { return true; };
 };
 
 TestNetwork::~TestNetwork() noexcept(false) {}
 
-TestVat& TestNetwork::add(kj::StringPtr name) {
-  return *map.insert(name, kj::heap<TestVat>(*this, name)).value;
+TestNetworkAdapter& TestNetwork::add(kj::StringPtr name) {
+  return *(map[name] = kj::heap<TestNetworkAdapter>(*this, name));
 }
 
 // =======================================================================================
 
-class TestRestorer {
-  // The name of this class is historical. It used to implement an interface called
-  // SturdyRefRestorer, but that interface was deprecated and removed in favor of singleton
-  // bootstrap objects. So now this just holds the boostrap object.
+class TestRestorer final: public SturdyRefRestorer<test::TestSturdyRefObjectId> {
 public:
   int callCount = 0;
   int handleCount = 0;
 
-  test::TestInterface::Client cap = kj::heap<TestInterfaceImpl>(callCount, handleCount);
+  Capability::Client restore(test::TestSturdyRefObjectId::Reader objectId) override {
+    switch (objectId.getTag()) {
+      case test::TestSturdyRefObjectId::Tag::TEST_INTERFACE:
+        return kj::heap<TestInterfaceImpl>(callCount);
+      case test::TestSturdyRefObjectId::Tag::TEST_EXTENDS:
+        return Capability::Client(newBrokenCap("No TestExtends implemented."));
+      case test::TestSturdyRefObjectId::Tag::TEST_PIPELINE:
+        return kj::heap<TestPipelineImpl>(callCount);
+      case test::TestSturdyRefObjectId::Tag::TEST_TAIL_CALLEE:
+        return kj::heap<TestTailCalleeImpl>(callCount);
+      case test::TestSturdyRefObjectId::Tag::TEST_TAIL_CALLER:
+        return kj::heap<TestTailCallerImpl>(callCount);
+      case test::TestSturdyRefObjectId::Tag::TEST_MORE_STUFF:
+        return kj::heap<TestMoreStuffImpl>(callCount, handleCount);
+    }
+    KJ_UNREACHABLE;
+  }
 };
 
 struct TestContext {
@@ -515,63 +460,40 @@ struct TestContext {
   kj::WaitScope waitScope;
   TestNetwork network;
   TestRestorer restorer;
-
-  struct Vat {
-    TestVat& vatNetwork;
-    RpcSystem<test::TestSturdyRefHostId> rpcSystem;
-
-    Vat(TestVat& vatNetwork)
-        : vatNetwork(vatNetwork), rpcSystem(makeRpcClient(vatNetwork)) {}
-
-    template <typename T>
-    Vat(TestVat& vatNetwork, T bootstrap)
-        : vatNetwork(vatNetwork), rpcSystem(makeRpcServer(vatNetwork, kj::mv(bootstrap))) {}
-
-    template <typename T = test::TestInterface>
-    typename T::Client connect(kj::StringPtr to) {
-      MallocMessageBuilder refMessage(128);
-      auto hostId = refMessage.initRoot<test::TestSturdyRefHostId>();
-      hostId.setHost(to);
-      return rpcSystem.bootstrap(hostId).castAs<T>();
-    }
-  };
-  kj::HashMap<kj::StringPtr, kj::Own<Vat>> vats;
-
-  Vat& getVat(kj::StringPtr name) {
-    // Get or create a vat with the given name. (Name must be a string literal or otherwise
-    // outlive the TestContext.)
-    return *vats.findOrCreate(name, [&]() -> decltype(vats)::Entry {
-      return { name,  kj::heap<Vat>(network.add(name)) };
-    });
-  }
-
-  template <typename T>
-  Vat& initVat(kj::StringPtr name, T bootstrap) {
-    // Create a vat with the given name and bootstrap capability.
-    return *vats.insert(name, kj::heap<Vat>(network.add(name), kj::mv(bootstrap))).value;
-  }
-
-  Vat& alice;
-  Vat& bob;
-  // For convenience, we create two default vats:
-  // - alice is a client (no bootstrap)
-  // - bob is a server serving TestInterfaceImpl (restorer.cap) as its bootstrap.
+  TestNetworkAdapter& clientNetwork;
+  TestNetworkAdapter& serverNetwork;
+  RpcSystem<test::TestSturdyRefHostId> rpcClient;
+  RpcSystem<test::TestSturdyRefHostId> rpcServer;
 
   TestContext()
       : waitScope(loop),
-        alice(getVat("alice")),
-        bob(initVat("bob", restorer.cap)) {}
+        clientNetwork(network.add("client")),
+        serverNetwork(network.add("server")),
+        rpcClient(makeRpcClient(clientNetwork)),
+        rpcServer(makeRpcServer(serverNetwork, restorer)) {}
+  TestContext(Capability::Client bootstrap)
+      : waitScope(loop),
+        clientNetwork(network.add("client")),
+        serverNetwork(network.add("server")),
+        rpcClient(makeRpcClient(clientNetwork)),
+        rpcServer(makeRpcServer(serverNetwork, bootstrap)) {}
 
-  test::TestInterface::Client connect() {
-    // Create the default alice -> bob connection.
-    return getVat("alice").connect<>("bob");
+  Capability::Client connect(test::TestSturdyRefObjectId::Tag tag) {
+    MallocMessageBuilder refMessage(128);
+    auto ref = refMessage.initRoot<test::TestSturdyRef>();
+    auto hostId = ref.initHostId();
+    hostId.setHost("server");
+    ref.getObjectId().initAs<test::TestSturdyRefObjectId>().setTag(tag);
+
+    return rpcClient.restore(hostId, ref.getObjectId());
   }
 };
 
-KJ_TEST("basics") {
+TEST(Rpc, Basic) {
   TestContext context;
 
-  auto client = context.connect();
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_INTERFACE)
+      .castAs<test::TestInterface>();
 
   auto request1 = client.fooRequest();
   request1.setI(123);
@@ -594,24 +516,25 @@ KJ_TEST("basics") {
   initTestMessage(request2.initS());
   auto promise2 = request2.send();
 
-  KJ_EXPECT(context.restorer.callCount == 0);
+  EXPECT_EQ(0, context.restorer.callCount);
 
   auto response1 = promise1.wait(context.waitScope);
 
-  KJ_EXPECT(response1.getX() == "foo");
+  EXPECT_EQ("foo", response1.getX());
 
   auto response2 = promise2.wait(context.waitScope);
 
   promise3.wait(context.waitScope);
 
-  KJ_EXPECT(context.restorer.callCount == 2);
-  KJ_EXPECT(barFailed);
+  EXPECT_EQ(2, context.restorer.callCount);
+  EXPECT_TRUE(barFailed);
 }
 
-KJ_TEST("pipelining") {
+TEST(Rpc, Pipelining) {
   TestContext context;
 
-  auto client = context.connect().getTestPipelineRequest().send().getCap();
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_PIPELINE)
+      .castAs<test::TestPipeline>();
 
   int chainedCallCount = 0;
 
@@ -630,23 +553,24 @@ KJ_TEST("pipelining") {
 
   promise = nullptr;  // Just to be annoying, drop the original promise.
 
-  KJ_EXPECT(context.restorer.callCount == 0);
-  KJ_EXPECT(chainedCallCount == 0);
+  EXPECT_EQ(0, context.restorer.callCount);
+  EXPECT_EQ(0, chainedCallCount);
 
   auto response = pipelinePromise.wait(context.waitScope);
-  KJ_EXPECT(response.getX() == "bar");
+  EXPECT_EQ("bar", response.getX());
 
   auto response2 = pipelinePromise2.wait(context.waitScope);
   checkTestMessage(response2);
 
-  KJ_EXPECT(context.restorer.callCount == 3);
-  KJ_EXPECT(chainedCallCount == 1);
+  EXPECT_EQ(3, context.restorer.callCount);
+  EXPECT_EQ(1, chainedCallCount);
 }
 
-KJ_TEST("sendForPipeline()") {
+KJ_TEST("RPC sendForPipeline()") {
   TestContext context;
 
-  auto client = context.connect().getTestPipelineRequest().send().getCap();
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_PIPELINE)
+      .castAs<test::TestPipeline>();
 
   int chainedCallCount = 0;
 
@@ -665,23 +589,24 @@ KJ_TEST("sendForPipeline()") {
 
   pipeline = nullptr;  // Just to be annoying, drop the original pipeline.
 
-  KJ_EXPECT(context.restorer.callCount == 0);
-  KJ_EXPECT(chainedCallCount == 0);
+  EXPECT_EQ(0, context.restorer.callCount);
+  EXPECT_EQ(0, chainedCallCount);
 
   auto response = pipelinePromise.wait(context.waitScope);
-  KJ_EXPECT(response.getX() == "bar");
+  EXPECT_EQ("bar", response.getX());
 
   auto response2 = pipelinePromise2.wait(context.waitScope);
   checkTestMessage(response2);
 
-  KJ_EXPECT(context.restorer.callCount == 3);
-  KJ_EXPECT(chainedCallCount == 1);
+  EXPECT_EQ(3, context.restorer.callCount);
+  EXPECT_EQ(1, chainedCallCount);
 }
 
-KJ_TEST("context.setPipeline") {
+KJ_TEST("RPC context.setPipeline") {
   TestContext context;
 
-  auto client = context.connect().getTestPipelineRequest().send().getCap();
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_PIPELINE)
+      .castAs<test::TestPipeline>();
 
   auto promise = client.getCapPipelineOnlyRequest().send();
 
@@ -692,55 +617,57 @@ KJ_TEST("context.setPipeline") {
   auto pipelineRequest2 = promise.getOutBox().getCap().castAs<test::TestExtends>().graultRequest();
   auto pipelinePromise2 = pipelineRequest2.send();
 
-  KJ_EXPECT(context.restorer.callCount == 0);
+  EXPECT_EQ(0, context.restorer.callCount);
 
   auto response = pipelinePromise.wait(context.waitScope);
-  KJ_EXPECT(response.getX() == "bar");
+  EXPECT_EQ("bar", response.getX());
 
   auto response2 = pipelinePromise2.wait(context.waitScope);
   checkTestMessage(response2);
 
-  KJ_EXPECT(context.restorer.callCount == 3);
+  EXPECT_EQ(3, context.restorer.callCount);
 
   // The original promise never completed.
   KJ_EXPECT(!promise.poll(context.waitScope));
 }
 
-KJ_TEST("release capability") {
+TEST(Rpc, Release) {
   TestContext context;
 
-  auto client = context.connect().getTestMoreStuffRequest().send().getCap();
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_MORE_STUFF)
+      .castAs<test::TestMoreStuff>();
 
   auto handle1 = client.getHandleRequest().send().wait(context.waitScope).getHandle();
   auto promise = client.getHandleRequest().send();
   auto handle2 = promise.wait(context.waitScope).getHandle();
 
-  KJ_EXPECT(context.restorer.handleCount == 2);
+  EXPECT_EQ(2, context.restorer.handleCount);
 
   handle1 = nullptr;
 
-  for (uint i = 0; i < 16; i++) kj::yield().wait(context.waitScope);
-  KJ_EXPECT(context.restorer.handleCount == 1);
+  for (uint i = 0; i < 16; i++) kj::evalLater([]() {}).wait(context.waitScope);
+  EXPECT_EQ(1, context.restorer.handleCount);
 
   handle2 = nullptr;
 
-  for (uint i = 0; i < 16; i++) kj::yield().wait(context.waitScope);
-  KJ_EXPECT(context.restorer.handleCount == 1);
+  for (uint i = 0; i < 16; i++) kj::evalLater([]() {}).wait(context.waitScope);
+  EXPECT_EQ(1, context.restorer.handleCount);
 
   promise = nullptr;
 
-  for (uint i = 0; i < 16; i++) kj::yield().wait(context.waitScope);
-  KJ_EXPECT(context.restorer.handleCount == 0);
+  for (uint i = 0; i < 16; i++) kj::evalLater([]() {}).wait(context.waitScope);
+  EXPECT_EQ(0, context.restorer.handleCount);
 }
 
-KJ_TEST("release capabilities when canceled during return") {
+TEST(Rpc, ReleaseOnCancel) {
   // At one time, there was a bug where if a Return contained capabilities, but the client had
   // canceled the request and already send a Finish (which presumably didn't reach the server before
   // the Return), then we'd leak those caps. Test for that.
 
   TestContext context;
 
-  auto client = context.connect().getTestMoreStuffRequest().send().getCap();
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_MORE_STUFF)
+      .castAs<test::TestMoreStuff>();
   client.whenResolved().wait(context.waitScope);
 
   {
@@ -748,23 +675,24 @@ KJ_TEST("release capabilities when canceled during return") {
 
     // If the server receives cancellation too early, it won't even return a capability in the
     // results, it will just return "canceled". We want to emulate the case where the return message
-    // and the cancel (finish) message cross paths. It turns out that exactly two yield()s get us
-    // there.
+    // and the cancel (finish) message cross paths. It turns out that exactly two evalLater()s get
+    // us there.
     //
     // TODO(cleanup): This is fragile, but I'm not sure how else to write it without a ton
     //   of scaffolding.
-    kj::yield().wait(context.waitScope);
-    kj::yield().wait(context.waitScope);
+    kj::evalLater([]() {}).wait(context.waitScope);
+    kj::evalLater([]() {}).wait(context.waitScope);
   }
 
-  for (uint i = 0; i < 16; i++) kj::yield().wait(context.waitScope);
-  KJ_EXPECT(context.restorer.handleCount == 0);
+  for (uint i = 0; i < 16; i++) kj::evalLater([]() {}).wait(context.waitScope);
+  EXPECT_EQ(0, context.restorer.handleCount);
 }
 
-KJ_TEST("tail call") {
+TEST(Rpc, TailCall) {
   TestContext context;
 
-  auto caller = context.connect().getTestTailCallerRequest().send().getCap();
+  auto caller = context.connect(test::TestSturdyRefObjectId::Tag::TEST_TAIL_CALLER)
+      .castAs<test::TestTailCaller>();
 
   int calleeCallCount = 0;
 
@@ -779,13 +707,13 @@ KJ_TEST("tail call") {
   auto dependentCall0 = promise.getC().getCallSequenceRequest().send();
 
   auto response = promise.wait(context.waitScope);
-  KJ_EXPECT(response.getI() == 456);
-  KJ_EXPECT(response.getT() == "from TestTailCaller");
+  EXPECT_EQ(456, response.getI());
+  EXPECT_EQ("from TestTailCaller", response.getT());
 
   auto dependentCall1 = promise.getC().getCallSequenceRequest().send();
 
-  KJ_EXPECT(dependentCall0.wait(context.waitScope).getN() == 0);
-  KJ_EXPECT(dependentCall1.wait(context.waitScope).getN() == 1);
+  EXPECT_EQ(0, dependentCall0.wait(context.waitScope).getN());
+  EXPECT_EQ(1, dependentCall1.wait(context.waitScope).getN());
 
   // TODO(someday): We used to initiate dependentCall2 here before waiting on the first two calls,
   //   and the ordering was still "correct". But this was apparently by accident. Calling getC() on
@@ -799,10 +727,10 @@ KJ_TEST("tail call") {
   //   for now I'm not gonna do it.
   auto dependentCall2 = response.getC().getCallSequenceRequest().send();
 
-  KJ_EXPECT(dependentCall2.wait(context.waitScope).getN() == 2);
+  EXPECT_EQ(2, dependentCall2.wait(context.waitScope).getN());
 
-  KJ_EXPECT(calleeCallCount == 1);
-  KJ_EXPECT(context.restorer.callCount == 1);
+  EXPECT_EQ(1, calleeCallCount);
+  EXPECT_EQ(1, context.restorer.callCount);
 }
 
 class TestHangingTailCallee final: public test::TestTailCallee::Server {
@@ -836,10 +764,11 @@ private:
   kj::Promise<void> unblock;
 };
 
-KJ_TEST("cancel tail call") {
+TEST(Rpc, TailCallCancel) {
   TestContext context;
 
-  auto caller = context.connect().getTestTailCallerRequest().send().getCap();
+  auto caller = context.connect(test::TestSturdyRefObjectId::Tag::TEST_TAIL_CALLER)
+      .castAs<test::TestTailCaller>();
 
   int callCount = 0, cancelCount = 0;
 
@@ -866,12 +795,15 @@ KJ_TEST("cancel tail call") {
   KJ_ASSERT(cancelCount == 1);
 }
 
-KJ_TEST("tail call cancellation race") {
-  TestContext context;
+TEST(Rpc, TailCallCancelRace) {
   auto paf = kj::newPromiseAndFulfiller<void>();
-  context.initVat("carol", kj::heap<TestRacingTailCaller>(kj::mv(paf.promise)));
+  TestContext context(kj::heap<TestRacingTailCaller>(kj::mv(paf.promise)));
 
-  auto caller = context.alice.connect<test::TestTailCaller>("carol");
+  MallocMessageBuilder serverHostIdBuilder;
+  auto serverHostId = serverHostIdBuilder.getRoot<test::TestSturdyRefHostId>();
+  serverHostId.setHost("server");
+
+  auto caller = context.rpcClient.bootstrap(serverHostId).castAs<test::TestTailCaller>();
 
   int callCount = 0, cancelCount = 0;
 
@@ -901,7 +833,7 @@ KJ_TEST("tail call cancellation race") {
   KJ_ASSERT(cancelCount == 1);
 }
 
-KJ_TEST("cancellation") {
+TEST(Rpc, Cancellation) {
   // Tests cancellation.
 
   TestContext context;
@@ -910,7 +842,8 @@ KJ_TEST("cancellation") {
   bool destroyed = false;
   auto destructionPromise = paf.promise.then([&]() { destroyed = true; }).eagerlyEvaluate(nullptr);
 
-  auto client = context.connect().getTestMoreStuffRequest().send().getCap();
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_MORE_STUFF)
+      .castAs<test::TestMoreStuff>();
 
   kj::Promise<void> promise = nullptr;
 
@@ -923,28 +856,29 @@ KJ_TEST("cancellation") {
       returned = true;
     }).eagerlyEvaluate(nullptr);
   }
-  kj::yield().wait(context.waitScope);
-  kj::yield().wait(context.waitScope);
-  kj::yield().wait(context.waitScope);
-  kj::yield().wait(context.waitScope);
-  kj::yield().wait(context.waitScope);
-  kj::yield().wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
 
   // We can detect that the method was canceled because it will drop the cap.
-  KJ_EXPECT(!destroyed);
-  KJ_EXPECT(!returned);
+  EXPECT_FALSE(destroyed);
+  EXPECT_FALSE(returned);
 
   promise = nullptr;  // request cancellation
   destructionPromise.wait(context.waitScope);
 
-  KJ_EXPECT(destroyed);
-  KJ_EXPECT(!returned);
+  EXPECT_TRUE(destroyed);
+  EXPECT_FALSE(returned);
 }
 
-KJ_TEST("resolve promise") {
+TEST(Rpc, PromiseResolve) {
   TestContext context;
 
-  auto client = context.connect().getTestMoreStuffRequest().send().getCap();
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_MORE_STUFF)
+      .castAs<test::TestMoreStuff>();
 
   int chainedCallCount = 0;
 
@@ -964,21 +898,21 @@ KJ_TEST("resolve promise") {
 
   // Make sure getCap() has been called on the server side by sending another call and waiting
   // for it.
-  KJ_EXPECT(client.getCallSequenceRequest().send().wait(context.waitScope).getN() == 2);
-  KJ_EXPECT(context.restorer.callCount == 3);
+  EXPECT_EQ(2, client.getCallSequenceRequest().send().wait(context.waitScope).getN());
+  EXPECT_EQ(3, context.restorer.callCount);
 
   // OK, now fulfill the local promise.
   paf.fulfiller->fulfill(kj::heap<TestInterfaceImpl>(chainedCallCount));
 
   // We should now be able to wait for getCap() to finish.
-  KJ_EXPECT(promise.wait(context.waitScope).getS() == "bar");
-  KJ_EXPECT(promise2.wait(context.waitScope).getS() == "bar");
+  EXPECT_EQ("bar", promise.wait(context.waitScope).getS());
+  EXPECT_EQ("bar", promise2.wait(context.waitScope).getS());
 
-  KJ_EXPECT(context.restorer.callCount == 3);
-  KJ_EXPECT(chainedCallCount == 2);
+  EXPECT_EQ(3, context.restorer.callCount);
+  EXPECT_EQ(2, chainedCallCount);
 }
 
-KJ_TEST("retain and release") {
+TEST(Rpc, RetainAndRelease) {
   TestContext context;
 
   auto paf = kj::newPromiseAndFulfiller<void>();
@@ -986,7 +920,8 @@ KJ_TEST("retain and release") {
   auto destructionPromise = paf.promise.then([&]() { destroyed = true; }).eagerlyEvaluate(nullptr);
 
   {
-    auto client = context.connect().getTestMoreStuffRequest().send().getCap();
+    auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_MORE_STUFF)
+        .castAs<test::TestMoreStuff>();
 
     {
       auto request = client.holdRequest();
@@ -995,13 +930,13 @@ KJ_TEST("retain and release") {
     }
 
     // Do some other call to add a round trip.
-    KJ_EXPECT(client.getCallSequenceRequest().send().wait(context.waitScope).getN() == 1);
+    EXPECT_EQ(1, client.getCallSequenceRequest().send().wait(context.waitScope).getN());
 
     // Shouldn't be destroyed because it's being held by the server.
-    KJ_EXPECT(!destroyed);
+    EXPECT_FALSE(destroyed);
 
     // We can ask it to call the held capability.
-    KJ_EXPECT(client.callHeldRequest().send().wait(context.waitScope).getS() == "bar");
+    EXPECT_EQ("bar", client.callHeldRequest().send().wait(context.waitScope).getS());
 
     {
       // We can get the cap back from it.
@@ -1009,41 +944,42 @@ KJ_TEST("retain and release") {
 
       {
         // And call it, without any network communications.
-        uint oldSentCount = context.alice.vatNetwork.getSentCount();
+        uint oldSentCount = context.clientNetwork.getSentCount();
         auto request = capCopy.fooRequest();
         request.setI(123);
         request.setJ(true);
-        KJ_EXPECT(request.send().wait(context.waitScope).getX() == "foo");
-        KJ_EXPECT(context.alice.vatNetwork.getSentCount() == oldSentCount);
+        EXPECT_EQ("foo", request.send().wait(context.waitScope).getX());
+        EXPECT_EQ(oldSentCount, context.clientNetwork.getSentCount());
       }
 
       {
         // We can send another copy of the same cap to another method, and it works.
         auto request = client.callFooRequest();
         request.setCap(capCopy);
-        KJ_EXPECT(request.send().wait(context.waitScope).getS() == "bar");
+        EXPECT_EQ("bar", request.send().wait(context.waitScope).getS());
       }
     }
 
     // Give some time to settle.
-    KJ_EXPECT(client.getCallSequenceRequest().send().wait(context.waitScope).getN() == 5);
-    KJ_EXPECT(client.getCallSequenceRequest().send().wait(context.waitScope).getN() == 6);
-    KJ_EXPECT(client.getCallSequenceRequest().send().wait(context.waitScope).getN() == 7);
+    EXPECT_EQ(5, client.getCallSequenceRequest().send().wait(context.waitScope).getN());
+    EXPECT_EQ(6, client.getCallSequenceRequest().send().wait(context.waitScope).getN());
+    EXPECT_EQ(7, client.getCallSequenceRequest().send().wait(context.waitScope).getN());
 
     // Can't be destroyed, we haven't released it.
-    KJ_EXPECT(!destroyed);
+    EXPECT_FALSE(destroyed);
   }
 
   // We released our client, which should cause the server to be released, which in turn will
   // release the cap pointing back to us.
   destructionPromise.wait(context.waitScope);
-  KJ_EXPECT(destroyed);
+  EXPECT_TRUE(destroyed);
 }
 
-KJ_TEST("cancel releases params") {
+TEST(Rpc, Cancel) {
   TestContext context;
 
-  auto client = context.connect().getTestMoreStuffRequest().send().getCap();
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_MORE_STUFF)
+      .castAs<test::TestMoreStuff>();
 
   auto paf = kj::newPromiseAndFulfiller<void>();
   bool destroyed = false;
@@ -1057,23 +993,24 @@ KJ_TEST("cancel releases params") {
       auto responsePromise = request.send();
 
       // Allow some time to settle.
-      KJ_EXPECT(client.getCallSequenceRequest().send().wait(context.waitScope).getN() == 1);
-      KJ_EXPECT(client.getCallSequenceRequest().send().wait(context.waitScope).getN() == 2);
+      EXPECT_EQ(1, client.getCallSequenceRequest().send().wait(context.waitScope).getN());
+      EXPECT_EQ(2, client.getCallSequenceRequest().send().wait(context.waitScope).getN());
 
       // The cap shouldn't have been destroyed yet because the call never returned.
-      KJ_EXPECT(!destroyed);
+      EXPECT_FALSE(destroyed);
     }
   }
 
   // Now the cap should be released.
   destructionPromise.wait(context.waitScope);
-  KJ_EXPECT(destroyed);
+  EXPECT_TRUE(destroyed);
 }
 
-KJ_TEST("send same cap twice") {
+TEST(Rpc, SendTwice) {
   TestContext context;
 
-  auto client = context.connect().getTestMoreStuffRequest().send().getCap();
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_MORE_STUFF)
+      .castAs<test::TestMoreStuff>();
 
   auto paf = kj::newPromiseAndFulfiller<void>();
   bool destroyed = false;
@@ -1085,11 +1022,11 @@ KJ_TEST("send same cap twice") {
     auto request = client.callFooRequest();
     request.setCap(cap);
 
-    KJ_EXPECT(request.send().wait(context.waitScope).getS() == "bar");
+    EXPECT_EQ("bar", request.send().wait(context.waitScope).getS());
   }
 
   // Allow some time for the server to release `cap`.
-  KJ_EXPECT(client.getCallSequenceRequest().send().wait(context.waitScope).getN() == 1);
+  EXPECT_EQ(1, client.getCallSequenceRequest().send().wait(context.waitScope).getN());
 
   {
     // More requests with the same cap.
@@ -1101,13 +1038,13 @@ KJ_TEST("send same cap twice") {
     auto promise = request.send();
     auto promise2 = request2.send();
 
-    KJ_EXPECT(promise.wait(context.waitScope).getS() == "bar");
-    KJ_EXPECT(promise2.wait(context.waitScope).getS() == "bar");
+    EXPECT_EQ("bar", promise.wait(context.waitScope).getS());
+    EXPECT_EQ("bar", promise2.wait(context.waitScope).getS());
   }
 
   // Now the cap should be released.
   destructionPromise.wait(context.waitScope);
-  KJ_EXPECT(destroyed);
+  EXPECT_TRUE(destroyed);
 }
 
 RemotePromise<test::TestCallOrder::GetCallSequenceResults> getCallSequence(
@@ -1117,10 +1054,11 @@ RemotePromise<test::TestCallOrder::GetCallSequenceResults> getCallSequence(
   return req.send();
 }
 
-KJ_TEST("embargo") {
+TEST(Rpc, Embargo) {
   TestContext context;
 
-  auto client = context.connect().getTestMoreStuffRequest().send().getCap();
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_MORE_STUFF)
+      .castAs<test::TestMoreStuff>();
 
   auto cap = test::TestCallOrder::Client(kj::heap<TestCallOrderImpl>());
 
@@ -1145,22 +1083,23 @@ KJ_TEST("embargo") {
   auto call4 = getCallSequence(pipeline, 4);
   auto call5 = getCallSequence(pipeline, 5);
 
-  KJ_EXPECT(call0.wait(context.waitScope).getN() == 0);
-  KJ_EXPECT(call1.wait(context.waitScope).getN() == 1);
-  KJ_EXPECT(call2.wait(context.waitScope).getN() == 2);
-  KJ_EXPECT(call3.wait(context.waitScope).getN() == 3);
-  KJ_EXPECT(call4.wait(context.waitScope).getN() == 4);
-  KJ_EXPECT(call5.wait(context.waitScope).getN() == 5);
+  EXPECT_EQ(0, call0.wait(context.waitScope).getN());
+  EXPECT_EQ(1, call1.wait(context.waitScope).getN());
+  EXPECT_EQ(2, call2.wait(context.waitScope).getN());
+  EXPECT_EQ(3, call3.wait(context.waitScope).getN());
+  EXPECT_EQ(4, call4.wait(context.waitScope).getN());
+  EXPECT_EQ(5, call5.wait(context.waitScope).getN());
 }
 
-KJ_TEST("embargos block CapabilityServerSet") {
-  // Test that embargos properly block unwrapping a capability using CapabilityServerSet.
+TEST(Rpc, EmbargoUnwrap) {
+  // Test that embargos properly block unwraping a capability using CapabilityServerSet.
 
   TestContext context;
 
   capnp::CapabilityServerSet<test::TestCallOrder> capSet;
 
-  auto client = context.connect().getTestMoreStuffRequest().send().getCap();
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_MORE_STUFF)
+      .castAs<test::TestMoreStuff>();
 
   auto cap = capSet.add(kj::heap<TestCallOrderImpl>());
 
@@ -1190,12 +1129,12 @@ KJ_TEST("embargos block CapabilityServerSet") {
   auto call4 = getCallSequence(pipeline, 4);
   auto call5 = getCallSequence(pipeline, 5);
 
-  KJ_EXPECT(call0.wait(context.waitScope).getN() == 0);
-  KJ_EXPECT(call1.wait(context.waitScope).getN() == 1);
-  KJ_EXPECT(call2.wait(context.waitScope).getN() == 2);
-  KJ_EXPECT(call3.wait(context.waitScope).getN() == 3);
-  KJ_EXPECT(call4.wait(context.waitScope).getN() == 4);
-  KJ_EXPECT(call5.wait(context.waitScope).getN() == 5);
+  EXPECT_EQ(0, call0.wait(context.waitScope).getN());
+  EXPECT_EQ(1, call1.wait(context.waitScope).getN());
+  EXPECT_EQ(2, call2.wait(context.waitScope).getN());
+  EXPECT_EQ(3, call3.wait(context.waitScope).getN());
+  EXPECT_EQ(4, call4.wait(context.waitScope).getN());
+  EXPECT_EQ(5, call5.wait(context.waitScope).getN());
 
   uint unwrappedAt = unwrap.wait(context.waitScope);
   KJ_EXPECT(unwrappedAt >= 3, unwrappedAt);
@@ -1203,20 +1142,21 @@ KJ_TEST("embargos block CapabilityServerSet") {
 
 template <typename T>
 void expectPromiseThrows(kj::Promise<T>&& promise, kj::WaitScope& waitScope) {
-  KJ_EXPECT(promise.then([](T&&) { return false; }, [](kj::Exception&&) { return true; })
+  EXPECT_TRUE(promise.then([](T&&) { return false; }, [](kj::Exception&&) { return true; })
       .wait(waitScope));
 }
 
 template <>
 void expectPromiseThrows(kj::Promise<void>&& promise, kj::WaitScope& waitScope) {
-  KJ_EXPECT(promise.then([]() { return false; }, [](kj::Exception&&) { return true; })
+  EXPECT_TRUE(promise.then([]() { return false; }, [](kj::Exception&&) { return true; })
       .wait(waitScope));
 }
 
-KJ_TEST("embargo error") {
+TEST(Rpc, EmbargoError) {
   TestContext context;
 
-  auto client = context.connect().getTestMoreStuffRequest().send().getCap();
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_MORE_STUFF)
+      .castAs<test::TestMoreStuff>();
 
   auto paf = kj::newPromiseAndFulfiller<test::TestCallOrder::Client>();
 
@@ -1256,7 +1196,7 @@ KJ_TEST("embargo error") {
   getCallSequence(client, 1).wait(context.waitScope);
 }
 
-KJ_TEST("don't embargo null capability") {
+TEST(Rpc, EmbargoNull) {
   // Set up a situation where we pipeline on a capability that ends up coming back null. This
   // should NOT cause a Disembargo to be sent, but due to a bug in earlier versions of Cap'n Proto,
   // a Disembargo was indeed sent to the null capability, which caused the server to disconnect
@@ -1264,7 +1204,8 @@ KJ_TEST("don't embargo null capability") {
 
   TestContext context;
 
-  auto client = context.connect().getTestMoreStuffRequest().send().getCap();
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_MORE_STUFF)
+      .castAs<test::TestMoreStuff>();
 
   auto promise = client.getNullRequest().send();
 
@@ -1283,12 +1224,13 @@ KJ_TEST("don't embargo null capability") {
   getCallSequence(client, 0).wait(context.waitScope);
 }
 
-KJ_TEST("call promise that later rejects") {
+TEST(Rpc, CallBrokenPromise) {
   // Tell the server to call back to a promise client, then resolve the promise to an error.
 
   TestContext context;
 
-  auto client = context.connect().getTestMoreStuffRequest().send().getCap();
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_MORE_STUFF)
+      .castAs<test::TestMoreStuff>();
   auto paf = kj::newPromiseAndFulfiller<test::TestInterface::Client>();
 
   {
@@ -1306,46 +1248,45 @@ KJ_TEST("call promise that later rejects") {
     kj::throwRecoverableException(kj::mv(e));
   }).eagerlyEvaluate(nullptr);
 
-  kj::yield().wait(context.waitScope);
-  kj::yield().wait(context.waitScope);
-  kj::yield().wait(context.waitScope);
-  kj::yield().wait(context.waitScope);
-  kj::yield().wait(context.waitScope);
-  kj::yield().wait(context.waitScope);
-  kj::yield().wait(context.waitScope);
-  kj::yield().wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
 
-  KJ_EXPECT(!returned);
+  EXPECT_FALSE(returned);
 
   paf.fulfiller->rejectIfThrows([]() { KJ_FAIL_ASSERT("foo") { break; } });
 
   expectPromiseThrows(kj::mv(req), context.waitScope);
-  KJ_EXPECT(returned);
+  EXPECT_TRUE(returned);
 
-  kj::yield().wait(context.waitScope);
-  kj::yield().wait(context.waitScope);
-  kj::yield().wait(context.waitScope);
-  kj::yield().wait(context.waitScope);
-  kj::yield().wait(context.waitScope);
-  kj::yield().wait(context.waitScope);
-  kj::yield().wait(context.waitScope);
-  kj::yield().wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
+  kj::evalLater([]() {}).wait(context.waitScope);
 
   // Verify that we're still connected (there were no protocol errors).
   getCallSequence(client, 1).wait(context.waitScope);
 }
 
-KJ_TEST("abort") {
+TEST(Rpc, Abort) {
   // Verify that aborts are received.
 
   TestContext context;
 
   MallocMessageBuilder refMessage(128);
   auto hostId = refMessage.initRoot<test::TestSturdyRefHostId>();
-  hostId.setHost("bob");
+  hostId.setHost("server");
 
-  auto conn = KJ_ASSERT_NONNULL(context.alice.vatNetwork.connect(hostId));
-  conn->setIdle(false);
+  auto conn = KJ_ASSERT_NONNULL(context.clientNetwork.connect(hostId));
 
   {
     // Send an invalid message (Return to non-existent question).
@@ -1357,60 +1298,21 @@ KJ_TEST("abort") {
   }
 
   auto reply = KJ_ASSERT_NONNULL(conn->receiveIncomingMessage().wait(context.waitScope));
-  KJ_EXPECT(reply->getBody().getAs<rpc::Message>().which() == rpc::Message::ABORT);
+  EXPECT_EQ(rpc::Message::ABORT, reply->getBody().getAs<rpc::Message>().which());
 
-  KJ_EXPECT(conn->receiveIncomingMessage().wait(context.waitScope) == kj::none);
-}
-
-KJ_TEST("handles exceptions thrown during disconnect") {
-  // This is similar to the earlier "abort" test, but throws an exception on
-  // connection shutdown, to exercise the RpcConnectionState error handler.
-
-  TestContext context;
-
-  MallocMessageBuilder refMessage(128);
-  auto hostId = refMessage.initRoot<test::TestSturdyRefHostId>();
-  hostId.setHost("bob");
-
-  context.bob.vatNetwork.setShutdownExceptionToThrow(
-      KJ_EXCEPTION(FAILED, "a_disconnect_exception"));
-
-  auto conn = KJ_ASSERT_NONNULL(context.alice.vatNetwork.connect(hostId));
-  conn->setIdle(false);
-
-  {
-    // Send an invalid message (Return to non-existent question).
-    auto msg = conn->newOutgoingMessage(128);
-    auto body = msg->getBody().initAs<rpc::Message>().initReturn();
-    body.setAnswerId(1234);
-    body.setCanceled();
-    msg->send();
-  }
-
-  {
-    // The internal exception handler of RpcSystemBase logs exceptions thrown
-    // during disconnect, which the test framework will flag as a failure if we
-    // don't explicitly tell it to expect the logged output.
-    KJ_EXPECT_LOG(ERROR, "a_disconnect_exception");
-
-    // Force outstanding promises to completion.  The server should detect the
-    // invalid message and disconnect, which should cause the connection's
-    // disconnect() to throw an exception that will then be handled by a
-    // RpcConnectionState handler.  Since other state instances were freed prior
-    // to the handler invocation, this caused failures in earlier versions of
-    // the code when run under asan.
-    kj::Promise<void>(kj::NEVER_DONE).poll(context.waitScope);
-  }
+  EXPECT_TRUE(conn->receiveIncomingMessage().wait(context.waitScope) == nullptr);
 }
 
 KJ_TEST("loopback bootstrap()") {
-  TestContext context;
-
   int callCount = 0;
   test::TestInterface::Client bootstrap = kj::heap<TestInterfaceImpl>(callCount);
-  auto& carol = context.initVat("carol", bootstrap);
 
-  auto client = carol.connect("carol").castAs<test::TestInterface>();
+  MallocMessageBuilder hostIdBuilder;
+  auto hostId = hostIdBuilder.getRoot<test::TestSturdyRefHostId>();
+  hostId.setHost("server");
+
+  TestContext context(bootstrap);
+  auto client = context.rpcServer.bootstrap(hostId).castAs<test::TestInterface>();
 
   auto request = client.fooRequest();
   request.setI(123);
@@ -1424,7 +1326,8 @@ KJ_TEST("loopback bootstrap()") {
 KJ_TEST("method throws exception") {
   TestContext context;
 
-  auto client = context.connect().getTestMoreStuffRequest().send().getCap();
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_MORE_STUFF)
+      .castAs<test::TestMoreStuff>();
 
   kj::Maybe<kj::Exception> maybeException;
   client.throwExceptionRequest().send().ignoreResult()
@@ -1440,7 +1343,8 @@ KJ_TEST("method throws exception") {
 KJ_TEST("method throws exception won't redundantly add remote exception prefix") {
   TestContext context;
 
-  auto client = context.connect().getTestMoreStuffRequest().send().getCap();
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_MORE_STUFF)
+      .castAs<test::TestMoreStuff>();
 
   kj::Maybe<kj::Exception> maybeException;
   client.throwRemoteExceptionRequest().send().ignoreResult()
@@ -1456,11 +1360,12 @@ KJ_TEST("method throws exception won't redundantly add remote exception prefix")
 KJ_TEST("method throws exception with trace encoder") {
   TestContext context;
 
-  context.bob.rpcSystem.setTraceEncoder([](const kj::Exception& e) {
+  context.rpcServer.setTraceEncoder([](const kj::Exception& e) {
     return kj::str("trace for ", e.getDescription());
   });
 
-  auto client = context.connect().getTestMoreStuffRequest().send().getCap();
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_MORE_STUFF)
+      .castAs<test::TestMoreStuff>();
 
   kj::Maybe<kj::Exception> maybeException;
   client.throwExceptionRequest().send().ignoreResult()
@@ -1473,24 +1378,6 @@ KJ_TEST("method throws exception with trace encoder") {
   KJ_EXPECT(exception.getRemoteTrace() == "trace for test exception");
 }
 
-KJ_TEST("method throws exception with detail") {
-  TestContext context;
-
-  auto client = context.connect().getTestMoreStuffRequest().send().getCap();
-
-  kj::Maybe<kj::Exception> maybeException;
-  client.throwExceptionWithDetailRequest().send().ignoreResult()
-      .catch_([&](kj::Exception&& e) {
-    maybeException = kj::mv(e);
-  }).wait(context.waitScope);
-
-  auto exception = KJ_ASSERT_NONNULL(maybeException);
-  KJ_EXPECT(exception.getDescription() == "remote exception: test exception");
-  KJ_EXPECT(exception.getRemoteTrace() == nullptr);
-  auto detail = KJ_ASSERT_NONNULL(exception.getDetail(1));
-  KJ_EXPECT(kj::str(detail.asChars()) == "foo");
-}
-
 KJ_TEST("when OutgoingRpcMessage::send() throws, we don't leak exports") {
   // When OutgoingRpcMessage::send() throws an exception on a Call message, we need to clean up
   // anything that had been added to the export table as part of the call. At one point this
@@ -1501,7 +1388,7 @@ KJ_TEST("when OutgoingRpcMessage::send() throws, we don't leak exports") {
   uint32_t expectedExportNumber = 0;
   uint interceptCount = 0;
   bool shouldThrowFromSend = false;
-  context.alice.vatNetwork.onSend([&](MessageBuilder& builder) {
+  context.clientNetwork.onSend([&](MessageBuilder& builder) {
     auto message = builder.getRoot<rpc::Message>().asReader();
     if (message.isCall()) {
       auto call = message.getCall();
@@ -1517,14 +1404,16 @@ KJ_TEST("when OutgoingRpcMessage::send() throws, we don't leak exports") {
 
         ++interceptCount;
         if (shouldThrowFromSend) {
-          kj::throwFatalException(KJ_EXCEPTION(FAILED, "intercepted"));
+          kj::throwRecoverableException(KJ_EXCEPTION(FAILED, "intercepted"));
+          return false;  // only matters when -fno-exceptions
         }
       }
     }
     return true;
   });
 
-  auto client = context.connect().getTestMoreStuffRequest().send().getCap();
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_MORE_STUFF)
+      .castAs<test::TestMoreStuff>();
 
   {
     shouldThrowFromSend = true;
@@ -1609,7 +1498,7 @@ KJ_TEST("export the same promise twice") {
   bool exportIsPromise;
   uint32_t expectedExportNumber;
   uint interceptCount = 0;
-  context.alice.vatNetwork.onSend([&](MessageBuilder& builder) {
+  context.clientNetwork.onSend([&](MessageBuilder& builder) {
     auto message = builder.getRoot<rpc::Message>().asReader();
     if (message.isCall()) {
       auto call = message.getCall();
@@ -1634,7 +1523,8 @@ KJ_TEST("export the same promise twice") {
     return true;
   });
 
-  auto client = context.connect().getTestMoreStuffRequest().send().getCap();
+  auto client = context.connect(test::TestSturdyRefObjectId::Tag::TEST_MORE_STUFF)
+      .castAs<test::TestMoreStuff>();
 
   auto sendReq = [&](test::TestInterface::Client cap) {
     auto req = client.callFooRequest();
@@ -1685,85 +1575,6 @@ KJ_TEST("export the same promise twice") {
   KJ_EXPECT(promise5.wait(context.waitScope).getS() == "bar");
   KJ_EXPECT(promise6.wait(context.waitScope).getS() == "bar");
   KJ_EXPECT(callCount == 3);
-}
-
-KJ_TEST("connections set idle when appropriate") {
-  TestContext context;
-
-  auto client = context.connect().getTestMoreStuffRequest().send().getCap();
-  context.waitScope.poll();  // let messages propagate
-
-  auto& clientConn = KJ_ASSERT_NONNULL(
-      context.alice.vatNetwork.getConnectionTo(context.bob.vatNetwork));
-  auto& serverConn = KJ_ASSERT_NONNULL(
-      context.bob.vatNetwork.getConnectionTo(context.alice.vatNetwork));
-
-  KJ_EXPECT(!clientConn.isIdle());
-  KJ_EXPECT(!serverConn.isIdle());
-
-  {auto drop = kj::mv(client);}
-  context.waitScope.poll();  // let messages propagate
-
-  // We dropped the only capability, so now the connections are idle.
-  KJ_EXPECT(clientConn.isIdle());
-  KJ_EXPECT(serverConn.isIdle());
-
-  // Establish bootstrap again.
-  client = context.connect().getTestMoreStuffRequest().send().getCap();
-  context.waitScope.poll();  // let messages propagate
-
-  // Once again, not idle.
-  KJ_EXPECT(!clientConn.isIdle());
-  KJ_EXPECT(!serverConn.isIdle());
-
-  // Start a call, and immediately drop the cap.
-  auto promise = client.neverReturnRequest().send();
-  {auto drop = kj::mv(client);}
-  context.waitScope.poll();  // let messages propagate
-
-  // Still not idle.
-  KJ_EXPECT(!clientConn.isIdle());
-  KJ_EXPECT(!serverConn.isIdle());
-
-  // But if we cancel the call...
-  {auto drop = kj::mv(promise);}
-  context.waitScope.poll();  // let messages propagate
-
-  // Now we are idle!
-  KJ_EXPECT(clientConn.isIdle());
-  KJ_EXPECT(serverConn.isIdle());
-}
-
-KJ_TEST("clean connection shutdown") {
-  TestContext context;
-
-  // Open a connection and immediately drop the capability.
-  {
-    auto client = context.connect().getTestMoreStuffRequest().send().getCap();
-    context.waitScope.poll();  // let messages propagate
-  }
-  context.waitScope.poll();  // let messages propagate
-
-  // How many messages have we sent at this point?
-  auto sent = context.alice.vatNetwork.getSentCount();
-  auto received = context.alice.vatNetwork.getReceivedCount();
-
-  // Have the client connection decide to end itself due to idleness, as is allowed under the
-  // setIdle() contract.
-  auto& clientConn = KJ_ASSERT_NONNULL(
-      context.alice.vatNetwork.getConnectionTo(context.bob.vatNetwork));
-  KJ_EXPECT(clientConn.isIdle());
-  clientConn.initiateIdleShutdown();
-
-  context.waitScope.poll();  // let messages propagate
-
-  // Connections should have gracefully shut down.
-  KJ_EXPECT(context.alice.vatNetwork.getConnectionTo(context.bob.vatNetwork) == kj::none);
-  KJ_EXPECT(context.bob.vatNetwork.getConnectionTo(context.alice.vatNetwork) == kj::none);
-
-  // No more messages should have been sent during shutdown (not even errors).
-  KJ_EXPECT(context.alice.vatNetwork.getSentCount() == sent);
-  KJ_EXPECT(context.alice.vatNetwork.getReceivedCount() == received);
 }
 
 }  // namespace

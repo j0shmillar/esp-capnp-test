@@ -34,7 +34,6 @@
 #include "serialize.h"
 #include <kj/debug.h>
 #include <kj/io.h>
-#include <kj/one-of.h>
 
 namespace capnp {
 
@@ -51,7 +50,7 @@ public:
 
   kj::Promise<kj::Maybe<size_t>> readWithFds(
       kj::AsyncCapabilityStream& inputStream,
-      kj::ArrayPtr<kj::OwnFd> fds, kj::ArrayPtr<word> scratchSpace);
+      kj::ArrayPtr<kj::AutoCloseFd> fds, kj::ArrayPtr<word> scratchSpace);
 
   // implements MessageReader ----------------------------------------
 
@@ -98,7 +97,7 @@ kj::Promise<bool> AsyncMessageReader::read(kj::AsyncInputStream& inputStream,
 }
 
 kj::Promise<kj::Maybe<size_t>> AsyncMessageReader::readWithFds(
-    kj::AsyncCapabilityStream& inputStream, kj::ArrayPtr<kj::OwnFd> fds,
+    kj::AsyncCapabilityStream& inputStream, kj::ArrayPtr<kj::AutoCloseFd> fds,
     kj::ArrayPtr<word> scratchSpace) {
   return inputStream.tryReadWithFds(firstWord, sizeof(firstWord), sizeof(firstWord),
                                     fds.begin(), fds.size())
@@ -106,11 +105,11 @@ kj::Promise<kj::Maybe<size_t>> AsyncMessageReader::readWithFds(
             (kj::AsyncCapabilityStream::ReadResult result) mutable
             -> kj::Promise<kj::Maybe<size_t>> {
     if (result.byteCount == 0) {
-      return kj::Maybe<size_t>(kj::none);
+      return kj::Maybe<size_t>(nullptr);
     } else if (result.byteCount < sizeof(firstWord)) {
       // EOF in first word.
       kj::throwRecoverableException(KJ_EXCEPTION(DISCONNECTED, "Premature EOF."));
-      return kj::Maybe<size_t>(kj::none);
+      return kj::Maybe<size_t>(nullptr);
     }
 
     return readAfterFirstWord(inputStream, scratchSpace)
@@ -207,20 +206,20 @@ kj::Promise<kj::Maybe<kj::Own<MessageReader>>> tryReadMessage(
     if (success) {
       return kj::mv(reader);
     } else {
-      return kj::none;
+      return nullptr;
     }
   });
 }
 
 kj::Promise<MessageReaderAndFds> readMessage(
-    kj::AsyncCapabilityStream& input, kj::ArrayPtr<kj::OwnFd> fdSpace,
+    kj::AsyncCapabilityStream& input, kj::ArrayPtr<kj::AutoCloseFd> fdSpace,
     ReaderOptions options, kj::ArrayPtr<word> scratchSpace) {
   auto reader = kj::heap<AsyncMessageReader>(options);
   auto promise = reader->readWithFds(input, fdSpace, scratchSpace);
   return promise.then([reader = kj::mv(reader), fdSpace](kj::Maybe<size_t> nfds) mutable
                       -> MessageReaderAndFds {
-    KJ_IF_SOME(n, nfds) {
-      return { kj::mv(reader), fdSpace.first(n) };
+    KJ_IF_MAYBE(n, nfds) {
+      return { kj::mv(reader), fdSpace.slice(0, *n) };
     } else {
       kj::throwRecoverableException(KJ_EXCEPTION(DISCONNECTED, "Premature EOF."));
       return { kj::mv(reader), nullptr };
@@ -229,16 +228,16 @@ kj::Promise<MessageReaderAndFds> readMessage(
 }
 
 kj::Promise<kj::Maybe<MessageReaderAndFds>> tryReadMessage(
-    kj::AsyncCapabilityStream& input, kj::ArrayPtr<kj::OwnFd> fdSpace,
+    kj::AsyncCapabilityStream& input, kj::ArrayPtr<kj::AutoCloseFd> fdSpace,
     ReaderOptions options, kj::ArrayPtr<word> scratchSpace) {
   auto reader = kj::heap<AsyncMessageReader>(options);
   auto promise = reader->readWithFds(input, fdSpace, scratchSpace);
   return promise.then([reader = kj::mv(reader), fdSpace](kj::Maybe<size_t> nfds) mutable
                       -> kj::Maybe<MessageReaderAndFds> {
-    KJ_IF_SOME(n, nfds) {
-      return MessageReaderAndFds { kj::mv(reader), fdSpace.first(n) };
+    KJ_IF_MAYBE(n, nfds) {
+      return MessageReaderAndFds { kj::mv(reader), fdSpace.slice(0, *n) };
     } else {
-      return kj::none;
+      return nullptr;
     }
   });
 }
@@ -365,19 +364,6 @@ kj::Promise<void> writeMessages(
   for (auto i : kj::indices(builders)) {
     messages[i] = builders[i]->getSegmentsForOutput();
   }
-  // Note that we don't have to `.attach(messages)` because `writeMessageImpl()` consumes the array
-  // upfront.
-  return writeMessages(output, messages);
-}
-
-kj::Promise<void> writeMessages(
-    kj::AsyncOutputStream& output, kj::ArrayPtr<kj::Own<MessageBuilder>> builders) {
-  auto messages = kj::heapArray<kj::ArrayPtr<const kj::ArrayPtr<const word>>>(builders.size());
-  for (auto i : kj::indices(builders)) {
-    messages[i] = builders[i]->getSegmentsForOutput();
-  }
-  // Note that we don't have to `.attach(messages)` because `writeMessageImpl()` consumes the array
-  // upfront.
   return writeMessages(output, messages);
 }
 
@@ -432,15 +418,15 @@ AsyncIoMessageStream::AsyncIoMessageStream(kj::AsyncIoStream& stream)
   : stream(stream) {};
 
 kj::Promise<kj::Maybe<MessageReaderAndFds>> AsyncIoMessageStream::tryReadMessage(
-    kj::ArrayPtr<kj::OwnFd> fdSpace,
+    kj::ArrayPtr<kj::AutoCloseFd> fdSpace,
     ReaderOptions options,
     kj::ArrayPtr<word> scratchSpace) {
   return capnp::tryReadMessage(stream, options, scratchSpace)
     .then([](kj::Maybe<kj::Own<MessageReader>> maybeReader) -> kj::Maybe<MessageReaderAndFds> {
-      KJ_IF_SOME(reader, maybeReader) {
-        return MessageReaderAndFds { kj::mv(reader), nullptr };
+      KJ_IF_MAYBE(reader, maybeReader) {
+        return MessageReaderAndFds { kj::mv(*reader), nullptr };
       } else {
-        return kj::none;
+        return nullptr;
       }
     });
 }
@@ -460,20 +446,20 @@ kj::Maybe<int> getSendBufferSize(kj::AsyncIoStream& stream) {
   // TODO(perf): It might be nice to have a tryGetsockopt() that doesn't require catching
   //   exceptions?
   int bufSize = 0;
-  KJ_IF_SOME(exception, kj::runCatchingExceptions([&]() {
+  KJ_IF_MAYBE(exception, kj::runCatchingExceptions([&]() {
     uint len = sizeof(int);
     stream.getsockopt(SOL_SOCKET, SO_SNDBUF, &bufSize, &len);
     KJ_ASSERT(len == sizeof(bufSize)) { break; }
   })) {
-    if (exception.getType() != kj::Exception::Type::UNIMPLEMENTED) {
+    if (exception->getType() != kj::Exception::Type::UNIMPLEMENTED) {
       // TODO(someday): Figure out why getting SO_SNDBUF sometimes throws EINVAL. I suspect it
       //   happens when the remote side has closed their read end, meaning we no longer have
       //   a send buffer, but I don't know what is the best way to verify that that was actually
       //   the reason. I'd prefer not to ignore EINVAL errors in general.
 
-      // kj::throwRecoverableException(kj::mv(exception));
+      // kj::throwRecoverableException(kj::mv(*exception));
     }
-    return kj::none;
+    return nullptr;
   }
   return bufSize;
 }
@@ -491,7 +477,7 @@ AsyncCapabilityMessageStream::AsyncCapabilityMessageStream(kj::AsyncCapabilitySt
   : stream(stream) {};
 
 kj::Promise<kj::Maybe<MessageReaderAndFds>> AsyncCapabilityMessageStream::tryReadMessage(
-    kj::ArrayPtr<kj::OwnFd> fdSpace,
+    kj::ArrayPtr<kj::AutoCloseFd> fdSpace,
     ReaderOptions options,
     kj::ArrayPtr<word> scratchSpace) {
   return capnp::tryReadMessage(stream, fdSpace, options, scratchSpace);
@@ -521,8 +507,8 @@ kj::Promise<kj::Own<MessageReader>> MessageStream::readMessage(
     ReaderOptions options,
     kj::ArrayPtr<word> scratchSpace) {
   return tryReadMessage(options, scratchSpace).then([](kj::Maybe<kj::Own<MessageReader>> maybeResult) {
-    KJ_IF_SOME(result, maybeResult) {
-        return kj::mv(result);
+    KJ_IF_MAYBE(result, maybeResult) {
+        return kj::mv(*result);
     } else {
         kj::throwRecoverableException(KJ_EXCEPTION(DISCONNECTED, "Premature EOF."));
         KJ_UNREACHABLE;
@@ -535,20 +521,20 @@ kj::Promise<kj::Maybe<kj::Own<MessageReader>>> MessageStream::tryReadMessage(
     kj::ArrayPtr<word> scratchSpace) {
   return tryReadMessage(nullptr, options, scratchSpace)
     .then([](auto maybeReaderAndFds) -> kj::Maybe<kj::Own<MessageReader>> {
-      KJ_IF_SOME(readerAndFds, maybeReaderAndFds) {
-        return kj::mv(readerAndFds.reader);
+      KJ_IF_MAYBE(readerAndFds, maybeReaderAndFds) {
+        return kj::mv(readerAndFds->reader);
       } else {
-        return kj::none;
+        return nullptr;
       }
   });
 }
 
 kj::Promise<MessageReaderAndFds> MessageStream::readMessage(
-    kj::ArrayPtr<kj::OwnFd> fdSpace,
+    kj::ArrayPtr<kj::AutoCloseFd> fdSpace,
     ReaderOptions options, kj::ArrayPtr<word> scratchSpace) {
   return tryReadMessage(fdSpace, options, scratchSpace).then([](auto maybeResult) {
-      KJ_IF_SOME(result, maybeResult) {
-        return kj::mv(result);
+      KJ_IF_MAYBE(result, maybeResult) {
+        return kj::mv(*result);
       } else {
         kj::throwRecoverableException(KJ_EXCEPTION(DISCONNECTED, "Premature EOF."));
         KJ_UNREACHABLE;
@@ -558,7 +544,7 @@ kj::Promise<MessageReaderAndFds> MessageStream::readMessage(
 
 // =======================================================================================
 
-class BufferedMessageStream::MessageReaderImpl final : public FlatArrayMessageReader {
+class BufferedMessageStream::MessageReaderImpl: public FlatArrayMessageReader {
 public:
   MessageReaderImpl(BufferedMessageStream& parent, kj::ArrayPtr<const word> data,
                     ReaderOptions options)
@@ -572,8 +558,8 @@ public:
       : FlatArrayMessageReader(scratchBuffer, options) {}
 
   ~MessageReaderImpl() noexcept(false) {
-    KJ_IF_SOME(parent, state.tryGet<BufferedMessageStream*>()) {
-      parent->hasOutstandingShortLivedMessage = false;
+    KJ_IF_MAYBE(parent, state.tryGet<BufferedMessageStream*>()) {
+      (*parent)->hasOutstandingShortLivedMessage = false;
     }
   }
 
@@ -598,15 +584,15 @@ BufferedMessageStream::BufferedMessageStream(
       beginData(buffer.begin()), beginAvailable(buffer.asBytes().begin()) {}
 
 kj::Promise<kj::Maybe<MessageReaderAndFds>> BufferedMessageStream::tryReadMessage(
-    kj::ArrayPtr<kj::OwnFd> fdSpace, ReaderOptions options, kj::ArrayPtr<word> scratchSpace) {
+    kj::ArrayPtr<kj::AutoCloseFd> fdSpace, ReaderOptions options, kj::ArrayPtr<word> scratchSpace) {
   return tryReadMessageImpl(fdSpace, 0, options, scratchSpace);
 }
 
 kj::Promise<void> BufferedMessageStream::writeMessage(
     kj::ArrayPtr<const int> fds,
     kj::ArrayPtr<const kj::ArrayPtr<const word>> segments) {
-  KJ_IF_SOME(cs, capStream) {
-    return capnp::writeMessage(cs, fds, segments);
+  KJ_IF_MAYBE(cs, capStream) {
+    return capnp::writeMessage(*cs, fds, segments);
   } else {
     return capnp::writeMessage(stream, segments);
   }
@@ -627,7 +613,7 @@ kj::Promise<void> BufferedMessageStream::end() {
 }
 
 kj::Promise<kj::Maybe<MessageReaderAndFds>> BufferedMessageStream::tryReadMessageImpl(
-    kj::ArrayPtr<kj::OwnFd> fdSpace, size_t fdsSoFar,
+    kj::ArrayPtr<kj::AutoCloseFd> fdSpace, size_t fdsSoFar,
     ReaderOptions options, kj::ArrayPtr<word> scratchSpace) {
   KJ_REQUIRE(!hasOutstandingShortLivedMessage,
       "can't read another message while the previous short-lived message still exists");
@@ -694,7 +680,7 @@ kj::Promise<kj::Maybe<MessageReaderAndFds>> BufferedMessageStream::tryReadMessag
 
     return kj::Maybe<MessageReaderAndFds>(MessageReaderAndFds {
       kj::mv(reader),
-      fdSpace.first(fdsSoFar)
+      fdSpace.slice(0, fdsSoFar)
     });
   }
 
@@ -777,7 +763,7 @@ kj::Promise<kj::Maybe<MessageReaderAndFds>> BufferedMessageStream::tryReadMessag
         kj::throwRecoverableException(KJ_EXCEPTION(DISCONNECTED,
             "stream disconnected prematurely"));
       }
-      return kj::Maybe<MessageReaderAndFds>(kj::none);
+      return kj::Maybe<MessageReaderAndFds>(nullptr);
     }
 
     // Loop!
@@ -787,7 +773,7 @@ kj::Promise<kj::Maybe<MessageReaderAndFds>> BufferedMessageStream::tryReadMessag
 
 kj::Promise<kj::Maybe<MessageReaderAndFds>> BufferedMessageStream::readEntireMessage(
     kj::ArrayPtr<const byte> prefix, size_t expectedSizeInWords,
-    kj::ArrayPtr<kj::OwnFd> fdSpace, size_t fdsSoFar,
+    kj::ArrayPtr<kj::AutoCloseFd> fdSpace, size_t fdsSoFar,
     ReaderOptions options) {
   KJ_REQUIRE(expectedSizeInWords <= options.traversalLimitInWords,
       "incoming RPC message exceeds size limit");
@@ -813,7 +799,7 @@ kj::Promise<kj::Maybe<MessageReaderAndFds>> BufferedMessageStream::readEntireMes
     if (result.byteCount < bytesRemaining) {
       // Received EOF during message.
       kj::throwRecoverableException(KJ_EXCEPTION(DISCONNECTED, "stream disconnected prematurely"));
-      return kj::Maybe<MessageReaderAndFds>(kj::none);
+      return kj::Maybe<MessageReaderAndFds>(nullptr);
     }
 
     size_t newExpectedSize = expectedSizeInWordsFromPrefix(msgBuffer);
@@ -835,15 +821,15 @@ kj::Promise<kj::Maybe<MessageReaderAndFds>> BufferedMessageStream::readEntireMes
 
     return kj::Maybe<MessageReaderAndFds>(MessageReaderAndFds {
       kj::heap<MessageReaderImpl>(kj::mv(msgBuffer), options),
-      fdSpace.first(fdsSoFar)
+      fdSpace.slice(0, fdsSoFar)
     });
   });
 }
 
 kj::Promise<kj::AsyncCapabilityStream::ReadResult> BufferedMessageStream::tryReadWithFds(
-    void* buffer, size_t minBytes, size_t maxBytes, kj::OwnFd* fdBuffer, size_t maxFds) {
-  KJ_IF_SOME(cs, capStream) {
-    return cs.tryReadWithFds(buffer, minBytes, maxBytes, fdBuffer, maxFds);
+    void* buffer, size_t minBytes, size_t maxBytes, kj::AutoCloseFd* fdBuffer, size_t maxFds) {
+  KJ_IF_MAYBE(cs, capStream) {
+    return cs->tryReadWithFds(buffer, minBytes, maxBytes, fdBuffer, maxFds);
   } else {
     // Regular byte stream, no FDs.
     return stream.tryRead(buffer, minBytes, maxBytes)

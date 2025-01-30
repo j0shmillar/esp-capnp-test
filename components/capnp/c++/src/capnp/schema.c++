@@ -268,15 +268,15 @@ Schema::BrandArgumentList Schema::getBrandArgumentsAtScope(uint64_t scopeId) con
 kj::Array<uint64_t> Schema::getGenericScopeIds() const {
   if (!getProto().getIsGeneric())
     return nullptr;
-
+  
   auto result = kj::heapArray<uint64_t>(raw->scopeCount);
   for (auto iScope: kj::indices(result)) {
     result[iScope] = raw->scopes[iScope].typeId;
   }
-
+  
   return result;
 }
-
+	
 
 StructSchema Schema::asStruct() const {
   KJ_REQUIRE(getProto().isStruct(), "Tried to use non-struct schema as a struct.",
@@ -477,7 +477,7 @@ auto findSchemaMemberByName(const _::RawSchema* raw, kj::StringPtr name, List&& 
     }
   }
 
-  return kj::none;
+  return nullptr;
 }
 
 }  // namespace
@@ -505,8 +505,8 @@ kj::Maybe<StructSchema::Field> StructSchema::findFieldByName(kj::StringPtr name)
 }
 
 StructSchema::Field StructSchema::getFieldByName(kj::StringPtr name) const {
-  KJ_IF_SOME(member, findFieldByName(name)) {
-    return member;
+  KJ_IF_MAYBE(member, findFieldByName(name)) {
+    return *member;
   } else {
     KJ_FAIL_REQUIRE("struct has no such member", name);
   }
@@ -516,7 +516,7 @@ kj::Maybe<StructSchema::Field> StructSchema::getFieldByDiscriminant(uint16_t dis
   auto unionFields = getUnionFields();
 
   if (discriminant >= unionFields.size()) {
-    return kj::none;
+    return nullptr;
   } else {
     return unionFields[discriminant];
   }
@@ -560,8 +560,8 @@ kj::Maybe<EnumSchema::Enumerant> EnumSchema::findEnumerantByName(kj::StringPtr n
 }
 
 EnumSchema::Enumerant EnumSchema::getEnumerantByName(kj::StringPtr name) const {
-  KJ_IF_SOME(enumerant, findEnumerantByName(name)) {
-    return enumerant;
+  KJ_IF_MAYBE(enumerant, findEnumerantByName(name)) {
+    return *enumerant;
   } else {
     KJ_FAIL_REQUIRE("enum has no such enumerant", name);
   }
@@ -584,12 +584,12 @@ kj::Maybe<InterfaceSchema::Method> InterfaceSchema::findMethodByName(
     kj::StringPtr name, uint& counter) const {
   // Security:  Don't let someone DOS us with a dynamic schema containing cyclic inheritance.
   KJ_REQUIRE(counter++ < MAX_SUPERCLASSES, "Cyclic or absurdly-large inheritance graph detected.") {
-    return kj::none;
+    return nullptr;
   }
 
   auto result = findSchemaMemberByName(raw->generic, name, getMethods());
 
-  if (result == kj::none) {
+  if (result == nullptr) {
     // Search superclasses.
     // TODO(perf):  This may be somewhat slow, and in the case of lots of diamond dependencies it
     //   could get pathological.  Arguably we should generate a flat list of transitive
@@ -604,7 +604,7 @@ kj::Maybe<InterfaceSchema::Method> InterfaceSchema::findMethodByName(
           _::RawBrandedSchema::DepKind::SUPERCLASS, i);
       result = getDependency(superclass.getId(), location)
           .asInterface().findMethodByName(name, counter);
-      if (result != kj::none) {
+      if (result != nullptr) {
         break;
       }
     }
@@ -614,8 +614,8 @@ kj::Maybe<InterfaceSchema::Method> InterfaceSchema::findMethodByName(
 }
 
 InterfaceSchema::Method InterfaceSchema::getMethodByName(kj::StringPtr name) const {
-  KJ_IF_SOME(method, findMethodByName(name)) {
-    return method;
+  KJ_IF_MAYBE(method, findMethodByName(name)) {
+    return *method;
   } else {
     KJ_FAIL_REQUIRE("interface has no such method", name);
   }
@@ -670,7 +670,7 @@ kj::Maybe<InterfaceSchema> InterfaceSchema::findSuperclass(uint64_t typeId) cons
 kj::Maybe<InterfaceSchema> InterfaceSchema::findSuperclass(uint64_t typeId, uint& counter) const {
   // Security:  Don't let someone DOS us with a dynamic schema containing cyclic inheritance.
   KJ_REQUIRE(counter++ < MAX_SUPERCLASSES, "Cyclic or absurdly-large inheritance graph detected.") {
-    return kj::none;
+    return nullptr;
   }
 
   if (typeId == raw->generic->id) {
@@ -683,13 +683,13 @@ kj::Maybe<InterfaceSchema> InterfaceSchema::findSuperclass(uint64_t typeId, uint
     auto superclass = superclasses[i];
     uint location = _::RawBrandedSchema::makeDepLocation(
         _::RawBrandedSchema::DepKind::SUPERCLASS, i);
-    KJ_IF_SOME(result, getDependency(superclass.getId(), location).asInterface()
+    KJ_IF_MAYBE(result, getDependency(superclass.getId(), location).asInterface()
                             .findSuperclass(typeId, counter)) {
-      return result;
+      return *result;
     }
   }
 
-  return kj::none;
+  return nullptr;
 }
 
 StructSchema InterfaceSchema::Method::getParamType() const {
@@ -759,6 +759,51 @@ ListSchema ListSchema::of(schema::Type::Which primitiveType) {
   return ListSchema(primitiveType);
 }
 
+ListSchema ListSchema::of(schema::Type::Reader elementType, Schema context) {
+  // This method is deprecated because it can only be implemented in terms of other deprecated
+  // methods. Temporarily disable warnings for those other deprecated methods.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
+  switch (elementType.which()) {
+    case schema::Type::VOID:
+    case schema::Type::BOOL:
+    case schema::Type::INT8:
+    case schema::Type::INT16:
+    case schema::Type::INT32:
+    case schema::Type::INT64:
+    case schema::Type::UINT8:
+    case schema::Type::UINT16:
+    case schema::Type::UINT32:
+    case schema::Type::UINT64:
+    case schema::Type::FLOAT32:
+    case schema::Type::FLOAT64:
+    case schema::Type::TEXT:
+    case schema::Type::DATA:
+      return of(elementType.which());
+
+    case schema::Type::STRUCT:
+      return of(context.getDependency(elementType.getStruct().getTypeId()).asStruct());
+
+    case schema::Type::ENUM:
+      return of(context.getDependency(elementType.getEnum().getTypeId()).asEnum());
+
+    case schema::Type::INTERFACE:
+      return of(context.getDependency(elementType.getInterface().getTypeId()).asInterface());
+
+    case schema::Type::LIST:
+      return of(of(elementType.getList().getElementType(), context));
+
+    case schema::Type::ANY_POINTER:
+      KJ_FAIL_REQUIRE("List(AnyPointer) not supported.");
+      return ListSchema();
+  }
+
+  // Unknown type is acceptable.
+  return ListSchema(elementType.which());
+#pragma GCC diagnostic pop
+}
+
 // =======================================================================================
 
 StructSchema Type::asStruct() const {
@@ -795,7 +840,7 @@ kj::Maybe<Type::BrandParameter> Type::getBrandParameter() const {
   KJ_REQUIRE(isAnyPointer(), "Type::getBrandParameter() can only be called on AnyPointer types.");
 
   if (scopeId == 0) {
-    return kj::none;
+    return nullptr;
   } else {
     return BrandParameter { scopeId, paramIndex };
   }
@@ -808,7 +853,7 @@ kj::Maybe<Type::ImplicitParameter> Type::getImplicitParameter() const {
   if (isImplicitParam) {
     return ImplicitParameter { paramIndex };
   } else {
-    return kj::none;
+    return nullptr;
   }
 }
 

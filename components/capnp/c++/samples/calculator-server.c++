@@ -20,9 +20,8 @@
 // THE SOFTWARE.
 
 #include "calculator.capnp.h"
-#include <kj/async-io.h>
-#include <capnp/rpc-twoparty.h>
 #include <kj/debug.h>
+#include <capnp/ez-rpc.h>
 #include <capnp/message.h>
 #include <iostream>
 
@@ -97,7 +96,7 @@ class ValueImpl final: public Calculator::Value::Server {
 public:
   ValueImpl(double value): value(value) {}
 
-  kj::Promise<void> read(ReadContext context) override {
+  kj::Promise<void> read(ReadContext context) {
     context.getResults().setValue(value);
     return kj::READY_NOW;
   }
@@ -116,7 +115,7 @@ public:
     this->body.setRoot(body);
   }
 
-  kj::Promise<void> call(CallContext context) override {
+  kj::Promise<void> call(CallContext context) {
     auto params = context.getParams().getParams();
     KJ_REQUIRE(params.size() == paramCount, "Wrong number of parameters.");
 
@@ -141,7 +140,7 @@ class OperatorImpl final: public Calculator::Function::Server {
 public:
   OperatorImpl(Calculator::Operator op): op(op) {}
 
-  kj::Promise<void> call(CallContext context) override {
+  kj::Promise<void> call(CallContext context) {
     auto params = context.getParams().getParams();
     KJ_REQUIRE(params.size() == 2, "Wrong number of parameters.");
 
@@ -197,17 +196,12 @@ int main(int argc, const char* argv[]) {
     return 1;
   }
 
-  // First we need to set up the KJ async event loop. This should happen one
-  // per thread that needs to perform RPC.
-  auto io = kj::setupAsyncIo();
-
-  // Using KJ APIs, let's parse our network address and listen on it.
-  kj::Network& network = io.provider->getNetwork();
-  kj::Own<kj::NetworkAddress> addr = network.parseAddress(argv[1]).wait(io.waitScope);
-  kj::Own<kj::ConnectionReceiver> listener = addr->listen();
+  // Set up a server.
+  capnp::EzRpcServer server(kj::heap<CalculatorImpl>(), argv[1]);
 
   // Write the port number to stdout, in case it was chosen automatically.
-  uint port = listener->getPort();
+  auto& waitScope = server.getWaitScope();
+  uint port = server.getPort().wait(waitScope);
   if (port == 0) {
     // The address format "unix:/path/to/socket" opens a unix domain socket,
     // in which case the port will be zero.
@@ -216,9 +210,6 @@ int main(int argc, const char* argv[]) {
     std::cout << "Listening on port " << port << "..." << std::endl;
   }
 
-  // Start the RPC server.
-  capnp::TwoPartyServer server(kj::heap<CalculatorImpl>());
-
   // Run forever, accepting connections and handling requests.
-  server.listen(*listener).wait(io.waitScope);
+  kj::NEVER_DONE.wait(waitScope);
 }

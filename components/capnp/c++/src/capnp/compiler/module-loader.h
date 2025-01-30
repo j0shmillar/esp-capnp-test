@@ -21,18 +21,17 @@
 
 #pragma once
 
-#include <capnp/common.h>
+#include "compiler.h"
+#include "error-reporter.h"
+#include <kj/memory.h>
+#include <kj/array.h>
+#include <kj/string.h>
+#include <kj/filesystem.h>
 
 CAPNP_BEGIN_HEADER
-namespace kj {
-class ReadableDirectory;
-class PathPtr;
-}
 
 namespace capnp {
 namespace compiler {
-class GlobalErrorReporter;
-class Module;
 
 class ModuleLoader {
 public:

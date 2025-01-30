@@ -36,7 +36,7 @@ KJ_TEST("HashMap") {
 
   KJ_EXPECT(KJ_ASSERT_NONNULL(map.find("foo"_kj)) == 123);
   KJ_EXPECT(KJ_ASSERT_NONNULL(map.find("bar"_kj)) == 456);
-  KJ_EXPECT(map.find("baz"_kj) == kj::none);
+  KJ_EXPECT(map.find("baz"_kj) == nullptr);
 
   map.upsert(kj::str("foo"), 789, [](int& old, uint newValue) {
     KJ_EXPECT(old == 123);
@@ -85,7 +85,7 @@ KJ_TEST("TreeMap") {
 
   KJ_EXPECT(KJ_ASSERT_NONNULL(map.find("foo"_kj)) == 123);
   KJ_EXPECT(KJ_ASSERT_NONNULL(map.find("bar"_kj)) == 456);
-  KJ_EXPECT(map.find("baz"_kj) == kj::none);
+  KJ_EXPECT(map.find("baz"_kj) == nullptr);
 
   map.upsert(kj::str("foo"), 789, [](int& old, uint newValue) {
     KJ_EXPECT(old == 123);
@@ -164,6 +164,7 @@ KJ_TEST("TreeMap range") {
   }
 }
 
+#if !KJ_NO_EXCEPTIONS
 KJ_TEST("HashMap findOrCreate throws") {
   HashMap<int, String> m;
   try {
@@ -175,13 +176,14 @@ KJ_TEST("HashMap findOrCreate throws") {
     // expected
   }
 
-  KJ_EXPECT(m.find(1) == kj::none);
+  KJ_EXPECT(m.find(1) == nullptr);
   m.findOrCreate(1, []() {
     return HashMap<int, String>::Entry { 1, kj::str("ok") };
   });
 
   KJ_EXPECT(KJ_ASSERT_NONNULL(m.find(1)) == "ok");
 }
+#endif
 
 template <typename MapType>
 void testEraseAll(MapType& m) {
@@ -197,8 +199,8 @@ void testEraseAll(MapType& m) {
 
   KJ_EXPECT(count == 2);
   KJ_EXPECT(m.size() == 3);
-  KJ_EXPECT(m.find(12) == kj::none);
-  KJ_EXPECT(m.find(99) == kj::none);
+  KJ_EXPECT(m.find(12) == nullptr);
+  KJ_EXPECT(m.find(99) == nullptr);
   KJ_EXPECT(KJ_ASSERT_NONNULL(m.find(83)) == "bar");
   KJ_EXPECT(KJ_ASSERT_NONNULL(m.find(6)) == "qux");
   KJ_EXPECT(KJ_ASSERT_NONNULL(m.find(55)) == "corge");
@@ -212,18 +214,6 @@ KJ_TEST("HashMap eraseAll") {
 KJ_TEST("TreeMap eraseAll") {
   TreeMap<int, StringPtr> m;
   testEraseAll(m);
-}
-
-KJ_TEST("HashMap<uint64> with int key") {
-  // Make sure searching for an `int` key in a `uint64_t` table works -- i.e., the hashes are
-  // consistent even though the types differ.
-  kj::HashMap<uint64_t, kj::StringPtr> map;
-  map.insert((uint64_t)123, "foo"_kj);
-  KJ_EXPECT(KJ_ASSERT_NONNULL(map.find((int)123)) == "foo"_kj);
-
-  // But also make sure that the upper bits of a 64-bit integer do affect the hash.
-  KJ_EXPECT(kj::hashCode(0x1200000001ull) != kj::hashCode(0x3400000001ull));
-  KJ_EXPECT(kj::hashCode(0x1200000001ull) != kj::hashCode(1));
 }
 
 }  // namespace

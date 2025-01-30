@@ -152,6 +152,7 @@ public:
   // A Path can be accessed as an array of strings.
 
   bool operator==(PathPtr other) const;
+  bool operator!=(PathPtr other) const;
   bool operator< (PathPtr other) const;
   bool operator> (PathPtr other) const;
   bool operator<=(PathPtr other) const;
@@ -159,6 +160,7 @@ public:
   // Compare path components lexically.
 
   bool operator==(const Path& other) const;
+  bool operator!=(const Path& other) const;
   bool operator< (const Path& other) const;
   bool operator> (const Path& other) const;
   bool operator<=(const Path& other) const;
@@ -270,6 +272,7 @@ public:
   const String* end() const;
   PathPtr slice(size_t start, size_t end) const;
   bool operator==(PathPtr other) const;
+  bool operator!=(PathPtr other) const;
   bool operator< (PathPtr other) const;
   bool operator> (PathPtr other) const;
   bool operator<=(PathPtr other) const;
@@ -320,12 +323,12 @@ public:
   //
   // Under the hood, this will call dup(), so the FD number will not be the same.
 
-  virtual Maybe<int> getFd() const { return kj::none; }
-  // Get the underlying Unix file descriptor, if any. Returns kj::none if this object actually isn't
+  virtual Maybe<int> getFd() const { return nullptr; }
+  // Get the underlying Unix file descriptor, if any. Returns nullptr if this object actually isn't
   // wrapping a file descriptor.
 
-  virtual Maybe<void*> getWin32Handle() const { return kj::none; }
-  // Get the underlying Win32 HANDLE, if any. Returns kj::none if this object actually isn't
+  virtual Maybe<void*> getWin32Handle() const { return nullptr; }
+  // Get the underlying Win32 HANDLE, if any. Returns nullptr if this object actually isn't
   // wrapping a handle.
 
   enum class Type {
@@ -380,6 +383,13 @@ public:
     // - Access control info: Differs wildly across platforms, and KJ prefers capabilities anyway.
     // - Other timestamps: Differs across platforms.
     // - Device number: If you care, you're probably doing platform-specific stuff anyway.
+
+    Metadata() = default;
+    Metadata(Type type, uint64_t size, uint64_t spaceUsed, Date lastModified, uint linkCount,
+             uint64_t hashCode)
+        : type(type), size(size), spaceUsed(spaceUsed), lastModified(lastModified),
+          linkCount(linkCount), hashCode(hashCode) {}
+    // TODO(cleanup): This constructor is redundant in C++14, but needed in C++11.
   };
 
   virtual Metadata stat() const = 0;
@@ -796,7 +806,7 @@ public:
 
   virtual Own<Replacer<File>> replaceFile(PathPtr path, WriteMode mode) const = 0;
   // Construct a file which, when ready, will be atomically moved to `path`, replacing whatever
-  // is there already. See `Replacer<T>` for details.
+  // is there already. See `Replacer<T>` for detalis.
   //
   // The `CREATE` and `MODIFY` bits of `mode` are not enforced until commit time, hence
   // `replaceFile()` has no "try" variant.
@@ -819,7 +829,7 @@ public:
 
   virtual Own<Replacer<Directory>> replaceSubdir(PathPtr path, WriteMode mode) const = 0;
   // Construct a directory which, when ready, will be atomically moved to `path`, replacing
-  // whatever is there already. See `Replacer<T>` for details.
+  // whatever is there already. See `Replacer<T>` for detalis.
   //
   // The `CREATE` and `MODIFY` bits of `mode` are not enforced until commit time, hence
   // `replaceSubdir()` has no "try" variant.
@@ -859,7 +869,7 @@ public:
   //
   // tryTransferTo() exists to implement double-dispatch. It should be called as a fallback by
   // implementations of tryTransfer() in cases where the target directory would otherwise fail or
-  // perform a pessimal transfer. The default implementation returns kj::none, which the caller
+  // perform a pessimal transfer. The default implementation returns nullptr, which the caller
   // should interpret as: "I don't have any special optimizations; do the obvious thing."
   //
   // `toMode` controls how the target path is created. CREATE_PARENT is honored but EXECUTABLE and
@@ -927,32 +937,8 @@ public:
 
 // =======================================================================================
 
-class InMemoryFileFactory {
-  // Used to customize the File implementation used by InMemoryDirectory.
-public:
-  virtual kj::Own<const File> create(const Clock& clock) const = 0;
-};
-
-const InMemoryFileFactory& defaultInMemoryFileFactory();
-// Creates files using `newInMemoryFile()`.
-
-#if __linux__
-
-Own<File> newMemfdFile(uint flags = 0);
-// Creates a `File` backed by a Linux memfd. This creates an in-memory file which behaves more
-// closely to a disk file, compared to newInMemoryFile(). In particular, the file has a backing
-// FD, and memory mapping doesn't have weird quirks.
-//
-// `flags` will be passed to `memfd_create()`. (The MFD_CLOEXEC flag is always added.)
-
-const InMemoryFileFactory& memfdInMemoryFileFactory();
-// Creates files using `newMemfdFile()`.
-
-#endif  // __linux__
-
 Own<File> newInMemoryFile(const Clock& clock);
-Own<Directory> newInMemoryDirectory(const Clock& clock,
-    const InMemoryFileFactory& fileFactory = defaultInMemoryFileFactory());
+Own<Directory> newInMemoryDirectory(const Clock& clock);
 // Construct file and directory objects which reside in-memory.
 //
 // InMemoryFile has the following special properties:
@@ -966,11 +952,6 @@ Own<Directory> newInMemoryDirectory(const Clock& clock,
 // - link() can link directory nodes in addition to files.
 // - link() and rename() accept any kind of Directory as `fromDirectory` -- it doesn't need to be
 //   another InMemoryDirectory. However, for rename(), the from path must be a directory.
-//
-// `fileFactory` can be customized in order to control the implementation of `File` objects created
-// using this `InMemoryDirectory`. This is particularly useful for testing where the application
-// expects files to have backing file descriptors or implement memory mapping fully correctly, but
-// doesn't care as much about directory behavior.
 
 Own<AppendableFile> newFileAppender(Own<const File> inner);
 // Creates an AppendableFile by wrapping a File. Note that this implementation assumes it is the
@@ -981,7 +962,7 @@ Own<AppendableFile> newFileAppender(Own<const File> inner);
 #if _WIN32
 typedef AutoCloseHandle OsFileHandle;
 #else
-typedef OwnFd OsFileHandle;
+typedef AutoCloseFd OsFileHandle;
 #endif
 
 Own<ReadableFile> newDiskReadableFile(OsFileHandle fd);
@@ -1029,11 +1010,13 @@ inline PathPtr Path::slice(size_t start, size_t end) const& {
   return PathPtr(*this).slice(start, end);
 }
 inline bool Path::operator==(PathPtr other) const { return PathPtr(*this) == other; }
+inline bool Path::operator!=(PathPtr other) const { return PathPtr(*this) != other; }
 inline bool Path::operator< (PathPtr other) const { return PathPtr(*this) <  other; }
 inline bool Path::operator> (PathPtr other) const { return PathPtr(*this) >  other; }
 inline bool Path::operator<=(PathPtr other) const { return PathPtr(*this) <= other; }
 inline bool Path::operator>=(PathPtr other) const { return PathPtr(*this) >= other; }
 inline bool Path::operator==(const Path& other) const { return PathPtr(*this) == PathPtr(other); }
+inline bool Path::operator!=(const Path& other) const { return PathPtr(*this) != PathPtr(other); }
 inline bool Path::operator< (const Path& other) const { return PathPtr(*this) <  PathPtr(other); }
 inline bool Path::operator> (const Path& other) const { return PathPtr(*this) >  PathPtr(other); }
 inline bool Path::operator<=(const Path& other) const { return PathPtr(*this) <= PathPtr(other); }
@@ -1064,6 +1047,7 @@ inline const String* PathPtr::end() const { return parts.end(); }
 inline PathPtr PathPtr::slice(size_t start, size_t end) const {
   return PathPtr(parts.slice(start, end));
 }
+inline bool PathPtr::operator!=(PathPtr other) const { return !(*this == other); }
 inline bool PathPtr::operator> (PathPtr other) const { return other < *this; }
 inline bool PathPtr::operator<=(PathPtr other) const { return !(other < *this); }
 inline bool PathPtr::operator>=(PathPtr other) const { return !(*this < other); }

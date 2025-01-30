@@ -20,12 +20,12 @@
 // THE SOFTWARE.
 
 #include "node-translator.h"
-#include "generics.h"
 #include "parser.h"      // only for generateGroupId() and expressionString()
 #include <capnp/serialize.h>
 #include <kj/debug.h>
 #include <kj/arena.h>
 #include <kj/encoding.h>
+#include <set>
 #include <map>
 #include <stdlib.h>
 #include <capnp/stream.capnp.h>
@@ -81,18 +81,18 @@ public:
       // is no such space, returns zero (no hole can be at offset zero, as explained above).
 
       if (lgSize >= kj::size(holes)) {
-        return kj::none;
+        return nullptr;
       } else if (holes[lgSize] != 0) {
         UIntType result = holes[lgSize];
         holes[lgSize] = 0;
         return result;
       } else {
-        KJ_IF_SOME(next, tryAllocate(lgSize + 1)) {
-          UIntType result = next * 2;
+        KJ_IF_MAYBE(next, tryAllocate(lgSize + 1)) {
+          UIntType result = *next * 2;
           holes[lgSize] = result + 1;
           return result;
         } else {
-          return kj::none;
+          return nullptr;
         }
       }
     }
@@ -159,7 +159,7 @@ public:
           return i;
         }
       }
-      return kj::none;
+      return nullptr;
     }
 
     uint getFirstWordUsed() {
@@ -199,8 +199,8 @@ public:
     void addVoid() override {}
 
     uint addData(uint lgSize) override {
-      KJ_IF_SOME(hole, holes.tryAllocate(lgSize)) {
-        return hole;
+      KJ_IF_MAYBE(hole, holes.tryAllocate(lgSize)) {
+        return *hole;
       } else {
         uint offset = dataWordCount++ << (6 - lgSize);
         holes.addHolesAtEnd(lgSize, offset + 1);
@@ -268,7 +268,7 @@ public:
     }
 
     bool addDiscriminant() {
-      if (discriminantOffset == kj::none) {
+      if (discriminantOffset == nullptr) {
         discriminantOffset = parent.addData(4);  // 2^4 = 16 bits
         return true;
       } else {
@@ -294,7 +294,7 @@ public:
           if (lgSize <= location.lgSize) {
             return location.lgSize;
           } else {
-            return kj::none;
+            return nullptr;
           }
         } else if (lgSize >= lgSizeUsed) {
           // Requested size is at least our current usage, so clearly won't fit in any current
@@ -303,11 +303,11 @@ public:
           if (lgSize < location.lgSize) {
             return lgSize;
           } else {
-            return kj::none;
+            return nullptr;
           }
-        } else KJ_IF_SOME(result, holes.smallestAtLeast(lgSize)) {
+        } else KJ_IF_MAYBE(result, holes.smallestAtLeast(lgSize)) {
           // There's a hole.
-          return result;
+          return *result;
         } else {
           // The requested size is smaller than what we're already using, but there are no holes
           // available.  If we could double our size, then we could allocate in the new space.
@@ -316,7 +316,7 @@ public:
             // We effectively create a new hole the same size as the current usage.
             return lgSizeUsed;
           } else {
-            return kj::none;
+            return nullptr;
           }
         }
       }
@@ -340,9 +340,9 @@ public:
           holes.addHolesAtEnd(lgSizeUsed, 1, lgSize);
           lgSizeUsed = lgSize + 1;
           result = 1;
-        } else KJ_IF_SOME(hole, holes.tryAllocate(lgSize)) {
+        } else KJ_IF_MAYBE(hole, holes.tryAllocate(lgSize)) {
           // Found a hole.
-          result = hole;
+          result = *hole;
         } else {
           // The requested size is smaller than what we're using so far, but didn't fit in a
           // hole.  We should double our "used" size, then allocate from the new space.
@@ -370,7 +370,7 @@ public:
             lgSizeUsed = lgSize;
             return location.offset << (location.lgSize - lgSize);
           } else {
-            return kj::none;
+            return nullptr;
           }
         } else {
           uint newSize = kj::max(lgSizeUsed, lgSize) + 1;
@@ -379,7 +379,7 @@ public:
             uint locationOffset = location.offset << (location.lgSize - lgSize);
             return locationOffset + result;
           } else {
-            return kj::none;
+            return nullptr;
           }
         }
       }
@@ -475,7 +475,7 @@ public:
       addMember();
 
       uint bestSize = kj::maxValue;
-      kj::Maybe<uint> bestLocation = kj::none;
+      kj::Maybe<uint> bestLocation = nullptr;
 
       for (uint i = 0; i < parent.dataLocations.size(); i++) {
         // If we haven't seen this DataLocation yet, add a corresponding DataLocationUsage.
@@ -484,25 +484,25 @@ public:
         }
 
         auto& usage = parentDataLocationUsage[i];
-        KJ_IF_SOME(hole, usage.smallestHoleAtLeast(parent.dataLocations[i], lgSize)) {
-          if (hole < bestSize) {
-            bestSize = hole;
+        KJ_IF_MAYBE(hole, usage.smallestHoleAtLeast(parent.dataLocations[i], lgSize)) {
+          if (*hole < bestSize) {
+            bestSize = *hole;
             bestLocation = i;
           }
         }
       }
 
-      KJ_IF_SOME(best, bestLocation) {
-        return parentDataLocationUsage[best].allocateFromHole(
-            *this, parent.dataLocations[best], lgSize);
+      KJ_IF_MAYBE(best, bestLocation) {
+        return parentDataLocationUsage[*best].allocateFromHole(
+            *this, parent.dataLocations[*best], lgSize);
       }
 
       // There are no holes at all in the union big enough to fit this field.  Go back through all
       // of the locations and attempt to expand them to fit.
       for (uint i = 0; i < parent.dataLocations.size(); i++) {
-        KJ_IF_SOME(result, parentDataLocationUsage[i].tryAllocateByExpanding(
+        KJ_IF_MAYBE(result, parentDataLocationUsage[i].tryAllocateByExpanding(
             *this, parent.dataLocations[i], lgSize)) {
-          return result;
+          return *result;
         }
       }
 
@@ -691,11 +691,6 @@ void NodeTranslator::compileNode(Declaration::Reader decl, schema::Node::Builder
       break;
   }
 
-  if (decl.which() != Declaration::ANNOTATION) {
-    builder.setStartByte(decl.getStartByte());
-    builder.setEndByte(decl.getEndByte());
-  }
-
   builder.adoptAnnotations(compileAnnotationApplications(decl.getAnnotations(), targetsFlagName));
 
   auto di = sourceInfo.get();
@@ -703,11 +698,10 @@ void NodeTranslator::compileNode(Declaration::Reader decl, schema::Node::Builder
   if (decl.hasDocComment()) {
     di.setDocComment(decl.getDocComment());
   }
-  di.setStartByte(decl.getStartByte());
-  di.setEndByte(decl.getEndByte());
 }
 
 static kj::StringPtr getExpressionTargetName(Expression::Reader exp) {
+  kj::StringPtr targetName;
   switch (exp.which()) {
     case Expression::ABSOLUTE_NAME:
       return exp.getAbsoluteName().getValue();
@@ -791,7 +785,7 @@ void NodeTranslator::DuplicateNameDetector::check(
           break;
       }
 
-      if (nameText.findFirst('_') != kj::none) {
+      if (nameText.findFirst('_') != nullptr) {
         errorReporter.addErrorOn(name,
             "Cap'n Proto declaration names should use camelCase and must not contain "
             "underscores. (Code generators may convert names to the appropriate style for the "
@@ -893,11 +887,11 @@ public:
   void check(LocatedInteger::Reader ordinal) {
     if (ordinal.getValue() < expectedOrdinal) {
       errorReporter.addErrorOn(ordinal, "Duplicate ordinal number.");
-      KJ_IF_SOME(last, lastOrdinalLocation) {
+      KJ_IF_MAYBE(last, lastOrdinalLocation) {
         errorReporter.addErrorOn(
-            last, kj::str("Ordinal @", last.getValue(), " originally used here."));
+            *last, kj::str("Ordinal @", last->getValue(), " originally used here."));
         // Don't report original again.
-        lastOrdinalLocation = kj::none;
+        lastOrdinalLocation = nullptr;
       }
     } else if (ordinal.getValue() > expectedOrdinal) {
       errorReporter.addErrorOn(ordinal,
@@ -1033,7 +1027,7 @@ private:
     // Information about the field declaration.  We don't use Declaration::Reader because it might
     // have come from a Declaration::Param instead.
 
-    kj::Maybe<Text::Reader> docComment = kj::none;
+    kj::Maybe<Text::Reader> docComment = nullptr;
 
     kj::Maybe<schema::Field::Builder> schema;
     // Schema for the field.  Initialized when getSchema() is first called.
@@ -1109,8 +1103,8 @@ private:
     }
 
     schema::Field::Builder getSchema() {
-      KJ_IF_SOME(result, schema) {
-        return result;
+      KJ_IF_MAYBE(result, schema) {
+        return *result;
       } else {
         index = parent->childInitializedCount;
         auto builderPair = parent->addMemberSchema();
@@ -1121,8 +1115,8 @@ private:
         builder.setName(name);
         builder.setCodeOrder(codeOrder);
 
-        KJ_IF_SOME(dc, docComment) {
-          builderPair.sourceInfo.setDocComment(dc);
+        KJ_IF_MAYBE(dc, docComment) {
+          builderPair.sourceInfo.setDocComment(*dc);
         }
 
         schema = builder;
@@ -1172,8 +1166,8 @@ private:
         getSchema().initGroup().setTypeId(groupId);
 
         sourceInfo.setId(groupId);
-        KJ_IF_SOME(dc, docComment) {
-          sourceInfo.setDocComment(dc);
+        KJ_IF_MAYBE(dc, docComment) {
+          sourceInfo.setDocComment(*dc);
         }
       }
     }
@@ -1252,8 +1246,8 @@ private:
           break;
       }
 
-      KJ_IF_SOME(o, ordinal) {
-        membersByOrdinal.insert(std::make_pair(o, memberInfo));
+      KJ_IF_MAYBE(o, ordinal) {
+        membersByOrdinal.insert(std::make_pair(*o, memberInfo));
       }
     }
   }
@@ -1330,8 +1324,8 @@ private:
           break;
       }
 
-      KJ_IF_SOME(o, ordinal) {
-        membersByOrdinal.insert(std::make_pair(o, memberInfo));
+      KJ_IF_MAYBE(o, ordinal) {
+        membersByOrdinal.insert(std::make_pair(*o, memberInfo));
       }
     }
   }
@@ -1542,19 +1536,19 @@ void NodeTranslator::compileInterface(Declaration::Interface::Reader decl,
   for (uint i: kj::indices(superclassesDecl)) {
     auto superclass = superclassesDecl[i];
 
-    KJ_IF_SOME(decl, compileDeclExpression(superclass, ImplicitParams::none())) {
-      KJ_IF_SOME(kind, decl.getKind()) {
-        if (kind == Declaration::INTERFACE) {
+    KJ_IF_MAYBE(decl, compileDeclExpression(superclass, ImplicitParams::none())) {
+      KJ_IF_MAYBE(kind, decl->getKind()) {
+        if (*kind == Declaration::INTERFACE) {
           auto s = superclassesBuilder[i];
-          s.setId(decl.getIdAndFillBrand([&]() { return s.initBrand(); }));
+          s.setId(decl->getIdAndFillBrand([&]() { return s.initBrand(); }));
         } else {
-          decl.addError(errorReporter, kj::str(
-            "'", decl.toString(), "' is not an interface."));
+          decl->addError(errorReporter, kj::str(
+            "'", decl->toString(), "' is not an interface."));
         }
       } else {
         // A variable?
-        decl.addError(errorReporter, kj::str(
-            "'", decl.toString(), "' is an unbound generic parameter. Currently we don't support "
+        decl->addError(errorReporter, kj::str(
+            "'", decl->toString(), "' is an unbound generic parameter. Currently we don't support "
             "extending these."));
       }
     }
@@ -1679,11 +1673,11 @@ uint64_t NodeTranslator::compileParamList(
       return id;
     }
     case Declaration::ParamList::TYPE:
-      KJ_IF_SOME(target, compileDeclExpression(
+      KJ_IF_MAYBE(target, compileDeclExpression(
           paramList.getType(), ImplicitParams { 0, implicitParams })) {
-        KJ_IF_SOME(kind, target.getKind()) {
-          if (kind == Declaration::STRUCT) {
-            return target.getIdAndFillBrand(kj::fwd<InitBrandFunc>(initBrand));
+        KJ_IF_MAYBE(kind, target->getKind()) {
+          if (*kind == Declaration::STRUCT) {
+            return target->getIdAndFillBrand(kj::fwd<InitBrandFunc>(initBrand));
           } else {
             errorReporter.addErrorOn(
                 paramList.getType(),
@@ -1691,7 +1685,7 @@ uint64_t NodeTranslator::compileParamList(
           }
         } else {
           // A variable?
-          target.addError(errorReporter,
+          target->addError(errorReporter,
               "Cannot use generic parameter as whole input or output of a method. Instead, "
               "use a parameter/result list containing a field with this type.");
           return 0;
@@ -1699,8 +1693,8 @@ uint64_t NodeTranslator::compileParamList(
       }
       return 0;
     case Declaration::ParamList::STREAM:
-      KJ_IF_SOME(streamCapnp, resolver.resolveImport("/capnp/stream.capnp")) {
-        if (streamCapnp.resolver->resolveMember("StreamResult") == kj::none) {
+      KJ_IF_MAYBE(streamCapnp, resolver.resolveImport("/capnp/stream.capnp")) {
+        if (streamCapnp->resolver->resolveMember("StreamResult") == nullptr) {
           errorReporter.addErrorOn(paramList,
               "The version of '/capnp/stream.capnp' found in your import path does not appear "
               "to be the official one; it is missing the declaration of StreamResult.");
@@ -1728,17 +1722,17 @@ NodeTranslator::compileDeclExpression(
     uint64_t scopeId, uint scopeParameterCount, Resolver& resolver, ErrorReporter& errorReporter,
     Expression::Reader expression, schema::Brand::Builder brandBuilder) {
   auto scope = kj::refcounted<BrandScope>(errorReporter, scopeId, scopeParameterCount, resolver);
-  KJ_IF_SOME(decl, scope->compileDeclExpression(expression, resolver, ImplicitParams::none())) {
-    return decl.asResolveResult(scope->getScopeId(), brandBuilder);
+  KJ_IF_MAYBE(decl, scope->compileDeclExpression(expression, resolver, ImplicitParams::none())) {
+    return decl->asResolveResult(scope->getScopeId(), brandBuilder);
   } else {
-    return kj::none;
+    return nullptr;
   }
 }
 
 bool NodeTranslator::compileType(Expression::Reader source, schema::Type::Builder target,
                                  ImplicitParams implicitMethodParams) {
-  KJ_IF_SOME(decl, compileDeclExpression(source, implicitMethodParams)) {
-    return decl.compileAsType(errorReporter, target);
+  KJ_IF_MAYBE(decl, compileDeclExpression(source, implicitMethodParams)) {
+    return decl->compileAsType(errorReporter, target);
   } else {
     return false;
   }
@@ -1821,15 +1815,15 @@ void NodeTranslator::compileValue(Expression::Reader source, schema::Type::Reade
   ResolverGlue glue(*this, isBootstrap);
   ValueTranslator valueTranslator(glue, errorReporter, orphanage);
 
-  KJ_IF_SOME(typeSchema, resolver.resolveBootstrapType(type, typeScope)) {
+  KJ_IF_MAYBE(typeSchema, resolver.resolveBootstrapType(type, typeScope)) {
     kj::StringPtr fieldName = Schema::from<schema::Type>()
-        .getUnionFields()[static_cast<uint>(typeSchema.which())].getProto().getName();
+        .getUnionFields()[static_cast<uint>(typeSchema->which())].getProto().getName();
 
-    KJ_IF_SOME(value, valueTranslator.compileValue(source, typeSchema)) {
-      if (typeSchema.isEnum()) {
-        target.setEnum(value.getReader().as<DynamicEnum>().getRaw());
+    KJ_IF_MAYBE(value, valueTranslator.compileValue(source, *typeSchema)) {
+      if (typeSchema->isEnum()) {
+        target.setEnum(value->getReader().as<DynamicEnum>().getRaw());
       } else {
-        toDynamic(target).adopt(fieldName, kj::mv(value));
+        toDynamic(target).adopt(fieldName, kj::mv(*value));
       }
     }
   }
@@ -1837,11 +1831,11 @@ void NodeTranslator::compileValue(Expression::Reader source, schema::Type::Reade
 
 kj::Maybe<Orphan<DynamicValue>> ValueTranslator::compileValue(Expression::Reader src, Type type) {
   if (type.isAnyPointer()) {
-    if (type.getBrandParameter() != kj::none || type.getImplicitParameter() != kj::none) {
+    if (type.getBrandParameter() != nullptr || type.getImplicitParameter() != nullptr) {
       errorReporter.addErrorOn(src,
           "Cannot interpret value because the type is a generic type parameter which is not "
           "yet bound. We don't know what type to expect here.");
-      return kj::none;
+      return nullptr;
     }
   }
 
@@ -1849,7 +1843,7 @@ kj::Maybe<Orphan<DynamicValue>> ValueTranslator::compileValue(Expression::Reader
 
   if (result.getType() == DynamicValue::UNKNOWN) {
     // Error already reported.
-    return kj::none;
+    return nullptr;
   } else if (matchesType(src, type, result)) {
     return kj::mv(result);
   } else {
@@ -1870,7 +1864,7 @@ kj::Maybe<Orphan<DynamicValue>> ValueTranslator::compileValue(Expression::Reader
 
     // That didn't work, so this is just a type mismatch.
     errorReporter.addErrorOn(src, kj::str("Type mismatch; expected ", makeTypeName(type), "."));
-    return kj::none;
+    return nullptr;
   }
 }
 
@@ -2015,8 +2009,8 @@ Orphan<DynamicValue> ValueTranslator::compileValueInner(Expression::Reader src, 
       kj::StringPtr id = name.getValue();
 
       if (type.isEnum()) {
-        KJ_IF_SOME(enumerant, type.asEnum().findEnumerantByName(id)) {
-          return DynamicEnum(enumerant);
+        KJ_IF_MAYBE(enumerant, type.asEnum().findEnumerantByName(id)) {
+          return DynamicEnum(*enumerant);
         }
       } else {
         // Interpret known constant values.
@@ -2034,8 +2028,8 @@ Orphan<DynamicValue> ValueTranslator::compileValueInner(Expression::Reader src, 
       }
 
       // Apparently not a literal. Try resolving it.
-      KJ_IF_SOME(constValue, resolver.resolveConstant(src)) {
-        return orphanage.newOrphanCopy(constValue);
+      KJ_IF_MAYBE(constValue, resolver.resolveConstant(src)) {
+        return orphanage.newOrphanCopy(*constValue);
       } else {
         return nullptr;
       }
@@ -2045,19 +2039,19 @@ Orphan<DynamicValue> ValueTranslator::compileValueInner(Expression::Reader src, 
     case Expression::IMPORT:
     case Expression::APPLICATION:
     case Expression::MEMBER:
-      KJ_IF_SOME(constValue, resolver.resolveConstant(src)) {
-        return orphanage.newOrphanCopy(constValue);
+      KJ_IF_MAYBE(constValue, resolver.resolveConstant(src)) {
+        return orphanage.newOrphanCopy(*constValue);
       } else {
         return nullptr;
       }
 
     case Expression::EMBED:
-      KJ_IF_SOME(data, resolver.readEmbed(src.getEmbed())) {
+      KJ_IF_MAYBE(data, resolver.readEmbed(src.getEmbed())) {
         switch (type.which()) {
           case schema::Type::TEXT: {
             // Sadly, we need to make a copy to add the NUL terminator.
-            auto text = orphanage.newOrphan<Text>(data.size());
-            memcpy(text.get().begin(), data.begin(), data.size());
+            auto text = orphanage.newOrphan<Text>(data->size());
+            memcpy(text.get().begin(), data->begin(), data->size());
             return kj::mv(text);
           }
           case schema::Type::DATA:
@@ -2071,25 +2065,25 @@ Orphan<DynamicValue> ValueTranslator::compileValueInner(Expression::Reader src, 
             //   boundary, it will be zero-padded, thus giving us our NUL terminator (4095/4096 of
             //   the time), but this seems to require documenting constraints on the underlying
             //   file-reading interfaces. Hm.
-            return orphanage.newOrphanCopy(Data::Reader(data));
+            return orphanage.newOrphanCopy(Data::Reader(*data));
           case schema::Type::STRUCT: {
             // We will almost certainly
-            if (data.size() % sizeof(word) != 0) {
+            if (data->size() % sizeof(word) != 0) {
               errorReporter.addErrorOn(src,
                   "Embedded file is not a valid Cap'n Proto message.");
               return nullptr;
             }
             kj::Array<word> copy;
             kj::ArrayPtr<const word> words;
-            if (reinterpret_cast<uintptr_t>(data.begin()) % sizeof(void*) == 0) {
+            if (reinterpret_cast<uintptr_t>(data->begin()) % sizeof(void*) == 0) {
               // Hooray, data is aligned.
               words = kj::ArrayPtr<const word>(
-                  reinterpret_cast<const word*>(data.begin()),
-                  data.size() / sizeof(word));
+                  reinterpret_cast<const word*>(data->begin()),
+                  data->size() / sizeof(word));
             } else {
               // Ugh, data not aligned. Make a copy.
-              copy = kj::heapArray<word>(data.size() / sizeof(word));
-              memcpy(copy.begin(), data.begin(), data.size());
+              copy = kj::heapArray<word>(data->size() / sizeof(word));
+              memcpy(copy.begin(), data->begin(), data->size());
               words = copy;
             }
             ReaderOptions options;
@@ -2151,8 +2145,8 @@ Orphan<DynamicValue> ValueTranslator::compileValueInner(Expression::Reader src, 
       Orphan<DynamicList> result = orphanage.newOrphan(listSchema, srcList.size());
       auto dstList = result.get();
       for (uint i = 0; i < srcList.size(); i++) {
-        KJ_IF_SOME(value, compileValue(srcList[i], elementType)) {
-          dstList.adopt(i, kj::mv(value));
+        KJ_IF_MAYBE(value, compileValue(srcList[i], elementType)) {
+          dstList.adopt(i, kj::mv(*value));
         }
       }
       return kj::mv(result);
@@ -2182,19 +2176,19 @@ void ValueTranslator::fillStructValue(DynamicStruct::Builder builder,
   for (auto assignment: assignments) {
     if (assignment.isNamed()) {
       auto fieldName = assignment.getNamed();
-      KJ_IF_SOME(field, builder.getSchema().findFieldByName(fieldName.getValue())) {
-        auto fieldProto = field.getProto();
+      KJ_IF_MAYBE(field, builder.getSchema().findFieldByName(fieldName.getValue())) {
+        auto fieldProto = field->getProto();
         auto value = assignment.getValue();
 
         switch (fieldProto.which()) {
           case schema::Field::SLOT:
-            KJ_IF_SOME(compiledValue, compileValue(value, field.getType())) {
-              builder.adopt(field, kj::mv(compiledValue));
+            KJ_IF_MAYBE(compiledValue, compileValue(value, field->getType())) {
+              builder.adopt(*field, kj::mv(*compiledValue));
             }
             break;
 
           case schema::Field::GROUP:
-            auto groupBuilder = builder.init(field).as<DynamicStruct>();
+            auto groupBuilder = builder.init(*field).as<DynamicStruct>();
             if (value.isTuple()) {
               fillStructValue(groupBuilder, value.getTuple());
             } else {
@@ -2205,7 +2199,7 @@ void ValueTranslator::fillStructValue(DynamicStruct::Builder builder,
                 // Call compileValueInner() using the group's type as `type`. Since we already
                 // established `value` is not a tuple, this will only return a valid result if
                 // the value has unambiguous type.
-                auto result = compileValueInner(value, field.getType());
+                auto result = compileValueInner(value, field->getType());
 
                 // Does it match the first field?
                 if (matchesType(value, groupField.getType(), result)) {
@@ -2263,18 +2257,18 @@ kj::Maybe<DynamicValue::Reader> NodeTranslator::readConstant(
     Expression::Reader source, bool isBootstrap) {
   // Look up the constant decl.
   BrandedDecl constDecl = nullptr;
-  KJ_IF_SOME(decl, compileDeclExpression(source, ImplicitParams::none())) {
-    constDecl = decl;
+  KJ_IF_MAYBE(decl, compileDeclExpression(source, ImplicitParams::none())) {
+    constDecl = *decl;
   } else {
     // Lookup will have reported an error.
-    return kj::none;
+    return nullptr;
   }
 
   // Is it a constant?
   if(constDecl.getKind().orDefault(Declaration::FILE) != Declaration::CONST) {
     errorReporter.addErrorOn(source,
         kj::str("'", expressionString(source), "' does not refer to a constant."));
-    return kj::none;
+    return nullptr;
   }
 
   // Extract the ID and brand.
@@ -2284,11 +2278,11 @@ kj::Maybe<DynamicValue::Reader> NodeTranslator::readConstant(
 
   // Look up the schema -- we'll need this to compile the constant's type.
   Schema constSchema;
-  KJ_IF_SOME(s, resolver.resolveBootstrapSchema(id, constBrand)) {
-    constSchema = s;
+  KJ_IF_MAYBE(s, resolver.resolveBootstrapSchema(id, constBrand)) {
+    constSchema = *s;
   } else {
     // The constant's schema is broken for reasons already reported.
-    return kj::none;
+    return nullptr;
   }
 
   // If we're bootstrapping, then we know we're expecting a primitive value, so if the
@@ -2297,11 +2291,11 @@ kj::Maybe<DynamicValue::Reader> NodeTranslator::readConstant(
   // version of the constant to make sure its value is filled in.
   schema::Node::Reader proto = constSchema.getProto();
   if (!isBootstrap) {
-    KJ_IF_SOME(finalProto, resolver.resolveFinalSchema(id)) {
-      proto = finalProto;
+    KJ_IF_MAYBE(finalProto, resolver.resolveFinalSchema(id)) {
+      proto = *finalProto;
     } else {
       // The constant's final schema is broken for reasons already reported.
-      return kj::none;
+      return nullptr;
     }
   }
 
@@ -2334,9 +2328,9 @@ kj::Maybe<DynamicValue::Reader> NodeTranslator::readConstant(
     // A fully unqualified identifier looks like it might refer to a constant visible in the
     // current scope, but if that's really what the user wanted, we want them to use a
     // qualified name to make it more obvious.  Report an error.
-    KJ_IF_SOME(scope, resolver.resolveBootstrapSchema(proto.getScopeId(),
+    KJ_IF_MAYBE(scope, resolver.resolveBootstrapSchema(proto.getScopeId(),
                                                        schema::Brand::Reader())) {
-      auto scopeReader = scope.getProto();
+      auto scopeReader = scope->getProto();
       kj::StringPtr parent;
       if (scopeReader.isFile()) {
         parent = "";
@@ -2356,12 +2350,12 @@ kj::Maybe<DynamicValue::Reader> NodeTranslator::readConstant(
 }
 
 kj::Maybe<kj::Array<const byte>> NodeTranslator::readEmbed(LocatedText::Reader filename) {
-  KJ_IF_SOME(data, resolver.readEmbed(filename.getValue())) {
-    return kj::mv(data);
+  KJ_IF_MAYBE(data, resolver.readEmbed(filename.getValue())) {
+    return kj::mv(*data);
   } else {
     errorReporter.addErrorOn(filename,
         kj::str("Couldn't read file for embed: ", filename.getValue()));
-    return kj::none;
+    return nullptr;
   }
 }
 
@@ -2384,18 +2378,18 @@ Orphan<List<schema::Annotation>> NodeTranslator::compileAnnotationApplications(
     annotationBuilder.initValue().setVoid();
 
     auto name = annotation.getName();
-    KJ_IF_SOME(decl, compileDeclExpression(name, ImplicitParams::none())) {
-      KJ_IF_SOME(kind, decl.getKind()) {
-        if (kind != Declaration::ANNOTATION) {
+    KJ_IF_MAYBE(decl, compileDeclExpression(name, ImplicitParams::none())) {
+      KJ_IF_MAYBE(kind, decl->getKind()) {
+        if (*kind != Declaration::ANNOTATION) {
           errorReporter.addErrorOn(name, kj::str(
               "'", expressionString(name), "' is not an annotation."));
         } else {
-          annotationBuilder.setId(decl.getIdAndFillBrand(
+          annotationBuilder.setId(decl->getIdAndFillBrand(
               [&]() { return annotationBuilder.initBrand(); }));
-          KJ_IF_SOME(annotationSchema,
+          KJ_IF_MAYBE(annotationSchema,
                       resolver.resolveBootstrapSchema(annotationBuilder.getId(),
                                                       annotationBuilder.getBrand())) {
-            auto node = annotationSchema.getProto().getAnnotation();
+            auto node = annotationSchema->getProto().getAnnotation();
             if (!toDynamic(node).get(targetsFlagName).as<bool>()) {
               errorReporter.addErrorOn(name, kj::str(
                   "'", expressionString(name), "' cannot be applied to this kind of declaration."));
@@ -2418,7 +2412,7 @@ Orphan<List<schema::Annotation>> NodeTranslator::compileAnnotationApplications(
               case Declaration::AnnotationApplication::Value::EXPRESSION:
                 compileBootstrapValue(value.getExpression(), node.getType(),
                                       annotationBuilder.getValue(),
-                                      annotationSchema);
+                                      *annotationSchema);
                 break;
             }
           }

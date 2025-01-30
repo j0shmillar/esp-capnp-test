@@ -210,28 +210,31 @@ When constructing very large, complex strings -- for example, when writing a cod
 
 `kj::Maybe<T>` is either `nullptr`, or contains a `T`. In KJ-based code, nullable values should always be expressed using `kj::Maybe`. Primitive pointers should never be null. Use `kj::Maybe<T&>` instead of `T*` to express that the pointer/reference can be null.
 
-In order to dereference a `kj::Maybe`, you must use the `KJ_IF_SOME` macro, which behaves like an `if` statement.
+In order to dereference a `kj::Maybe`, you must use the `KJ_IF_MAYBE` macro, which behaves like an `if` statement.
 
 ```c++
 kj::Maybe<int> maybeI = 123;
 kj::Maybe<int> maybeJ = nullptr;
 
-KJ_IF_SOME(i, maybeI) {
+KJ_IF_MAYBE(i, maybeI) {
   // This block will execute, with `i` being a
-  // reference to `maybeI`'s value.
-  KJ_ASSERT(i == 123);
+  // pointer into `maybeI`'s value. In a better world,
+  // `i` would be a reference rather than a pointer,
+  // but we couldn't find a way to trick the compiler
+  // into that.
+  KJ_ASSERT(*i == 123);
 } else {
   KJ_FAIL_ASSERT("can't get here");
 }
 
-KJ_IF_SOME(j, maybeJ) {
+KJ_IF_MAYBE(j, maybeJ) {
   KJ_FAIL_ASSERT("can't get here");
 } else {
   // This block will execute.
 }
 ```
 
-Note that `KJ_IF_SOME` forces you to think about the null case. This differs from `std::optional`, which can be dereferenced using `*`, resulting in undefined behavior if the value is null.
+Note that `KJ_IF_MAYBE` forces you to think about the null case. This differs from `std::optional`, which can be dereferenced using `*`, resulting in undefined behavior if the value is null.
 
 Similarly, `map()` and `orDefault()` allow transforming and retrieving the stored value in a safe manner without complex control flows.
 
@@ -246,7 +249,8 @@ void handle(kj::OneOf<int, kj::String> value) {
   KJ_SWITCH_ONEOF(value) {
     KJ_CASE_ONEOF(i, int) {
       // Note that `i` is an lvalue reference to the content
-      // of the OneOf, similar to `KJ_IF_SOME`.
+      // of the OneOf. This differs from `KJ_IF_MAYBE` where
+      // the variable is a pointer.
       handleInt(i);
     }
     KJ_CASE_ONEOF(s, kj::String) {
@@ -371,13 +375,8 @@ KJ_DBG("hi", foo, bar, baz.qux)
 KJ includes special variants of its assertion macros that convert traditional C API error conventions into exceptions.
 
 ```c++
-// For a syscall returning a file descriptor, use KJ_SYSCALL_FD.
-kj::OwnFd fd = KJ_SYSCALL_FD(
-    open(filename, O_RDONLY), "couldn't open the document", filename);
-
-// For a syscall returning anything else, use KJ_SYSCALL.
-ssize_t n;
-KJ_SYSCALL(n = read(fd, buffer, sizeof(buffer)));
+int fd;
+KJ_SYSCALL(fd = open(filename, O_RDONLY), "couldn't open the document", filename);
 ```
 
 This macro evaluates the first parameter, which is expected to be a system call. If it returns a negative value, indicating an error, then an exception is thrown. The exception description incorporates a description of the error code communicated by `errno`, as well as the other parameters passed to the macro (stringified in the same manner as other assertion/logging macros do).
@@ -396,9 +395,6 @@ KJ_SYSCALL_HANDLE_ERRORS(fd = open(filename, O_RDONLY)) {
     // Some other error. The error code (from errno) is in a local variable `error`.
     // `KJ_FAIL_SYSCALL` expects its second parameter to be this integer error code.
     KJ_FAIL_SYSCALL("open()", error, "couldn't open the document", filename);
-} else {
-  // The `else` clause runs if the system call succeeded.
-  return kj::OwnFd(fd);
 }
 ```
 
@@ -427,7 +423,7 @@ kj::throwFatalException(kj::mv(e));
 kj::Maybe<kj::Exception> maybeException = kj::runCatchingExceptions([&]() {
   doSomething();
 });
-KJ_IF_SOME(e, maybeException) {
+KJ_IF_MAYBE(e, maybeException) {
   // handle exception
 }
 ```
@@ -438,8 +434,6 @@ These wrappers perform some extra bookkeeping:
 * These helpers also work, to some extent, even when compiled with `-fno-exceptions` -- see below. (Note that "fatal" vs. "recoverable" exceptions are only different in this case; when exceptions are enabled, they are handled the same.)
 
 ### Supporting `-fno-exceptions`
-
-_NOTE: In KJ / Cap'n Proto v2.0, support for `-fno-exceptions` has been removed, making this section somewhat obsolete. However, instances of recovery blocks still appear in the codebase, and they may still be relevant in the case of destructors, where they protect against throwing during unwind. Recovery blocks appearing anywhere other than destructors or code called from destructors can safely be deleted._
 
 KJ strongly recommends using C++ exceptions. However, exceptions are controversial, and many C++ applications are compiled with exceptions disabled. Some KJ-based libraries (especially Cap'n Proto) would like to accommodate such users. To that end, KJ's exception and assertion infrastructure is designed to degrade gracefully when compiled without exception support. In this case, exceptions are split into two types:
 
@@ -540,6 +534,9 @@ This section describes KJ APIs that control process execution and low-level inte
 
 `kj::Lazy<T>` is an instance of `T` that is constructed on first access in a thread-safe way.
 
+Macros `KJ_TRACK_LOCK_BLOCKING` and `KJ_SAVE_ACQUIRED_LOCK_INFO` can be used to enable support utilities to implement deadlock detection & analysis.
+* `KJ_TRACK_LOCK_BLOCKING`: When the current thread is doing a blocking synchronous KJ operation, that operation is available via `kj::blockedReason()` (intention is for this to be invoked from the signal handler running on the thread that's doing the synchronous operation).
+* `KJ_SAVE_ACQUIRED_LOCK_INFO`: When enabled, lock acquisition will save state about the location of the acquired lock. When combined with `KJ_TRACK_LOCK_BLOCKING` this can be particularly helpful because any watchdog can just forward the signal to the thread that's holding the lock.
 ## Asynchronous Event Loop
 
 ### Promises
@@ -973,10 +970,6 @@ There are some caveats one should be aware of while writing coroutines:
 - Holding a mutex lock across a `co_await` is almost always a bad idea, with essentially the same problems as holding a lock while calling `promise.wait(waitScope)`. This would cause the coroutine to hold the lock for however many turns of the event loop is required to drive the coroutine to release the lock; if I/O is involved, this could cause significant problems. Additionally, a reentrant call to the coroutine on the same thread would deadlock. Instead, if a coroutine must temporarily hold a lock, always keep the lock in a new lexical scope without any `co_await`.
 - Attempting to define (and use) a variable-length array will cause a compile error, because the size of coroutine frames must be knowable at compile-time. The error message that clang emits for this, "Coroutines cannot handle non static allocas yet", suggests this may be relaxed in the future.
 
-There are some additional considerations when refactoring `.then()`-style code into coroutines:
-- When refactoring recursive asynchronous loops (see the "Loops" section elsewhere in this document), you must replace recursion with a traditional `for` or `while` loop. This is because while `.then()` supports tail-call optimization, our implementation of `co_await` does not. Fortunately, this usually makes the code more readable anyway. If there are multiple points of recursion, one simple strategy is to replace the points of recursion (e.g. `return loop()`) with `continue`, and wrap the code in an infinite loop.
-- Replacing `.then()` with `co_await` can affect timing, because `co_await` effectively eagerly evaluates the awaited promise. If refactoring `.then()`-style code into a coroutine produces different results, or hung promises, it is likely you are running into a latent timing bug exposed by this subtle difference in semantics. Try adding `.eagerlyEvaluate(nullptr)` to each `.then()` promise and fixing the bug before proceeding.
-
 As of this writing, KJ supports C++20 coroutines and Coroutines TS coroutines, the latter being an experimental precursor to C++20 coroutines. They are functionally the same thing, but enabled with different compiler/linker flags:
 
 - Enable C++20 coroutines by requesting that language standard from your compiler.
@@ -1026,7 +1019,7 @@ Although most complex KJ applications use async I/O, sometimes you want somethin
 
 `kj/io.h` provides some more basic, synchronous streaming interfaces, like `kj::InputStream` and `kj::OutputStream`. Implementations are provided on top of file descriptors and Windows `HANDLE`s.
 
-Additionally, the important utility class `kj::OwnFd` (and `kj::AutoCloseHandle` for Windows) can be found here. This is an RAII wrapper around a file descriptor (or `HANDLE`), which you will likely want to use any time you are manipulating raw file descriptors (or `HANDLE`s) in KJ code.
+Additionally, the important utility class `kj::AutoCloseFd` (and `kj::AutoCloseHandle` for Windows) can be found here. This is an RAII wrapper around a file descriptor (or `HANDLE`), which you will likely want to use any time you are manipulating raw file descriptors (or `HANDLE`s) in KJ code.
 
 ### Filesystem
 

@@ -38,8 +38,8 @@ namespace rpc {
   }
 }
 
-typedef VatNetwork<rpc::twoparty::VatId, rpc::twoparty::ThirdPartyCompletion,
-    rpc::twoparty::ThirdPartyToAwait, rpc::twoparty::ThirdPartyToContact, rpc::twoparty::JoinResult>
+typedef VatNetwork<rpc::twoparty::VatId, rpc::twoparty::ProvisionId,
+    rpc::twoparty::RecipientId, rpc::twoparty::ThirdPartyCapId, rpc::twoparty::JoinResult>
     TwoPartyVatNetworkBase;
 
 class TwoPartyVatNetwork: public TwoPartyVatNetworkBase,
@@ -47,6 +47,9 @@ class TwoPartyVatNetwork: public TwoPartyVatNetworkBase,
                           private RpcFlowController::WindowGetter {
   // A `VatNetwork` that consists of exactly two parties communicating over an arbitrary byte
   // stream.  This is used to implement the common case of a client/server network.
+  //
+  // See `ez-rpc.h` for a simple interface for setting up two-party clients and servers.
+  // Use `TwoPartyVatNetwork` only if you need the advanced features.
 
 public:
   TwoPartyVatNetwork(MessageStream& msgStream,
@@ -119,10 +122,6 @@ private:
   bool solSndbufUnimplemented = false;
   // Whether stream.getsockopt(SO_SNDBUF) has been observed to throw UNIMPLEMENTED.
 
-  bool idle = true;
-  // Only used to catch RpcSystem bugs. Starts true because RpcSystem should call setIdle(false)
-  // right away.
-
   kj::Canceler readCanceler;
   kj::Maybe<kj::Exception> readCancelReason;
   // Used to propagate write errors into (permanent) read errors.
@@ -177,7 +176,6 @@ private:
   kj::Own<OutgoingRpcMessage> newOutgoingMessage(uint firstSegmentWordSize) override;
   kj::Promise<kj::Maybe<kj::Own<IncomingRpcMessage>>> receiveIncomingMessage() override;
   kj::Promise<void> shutdown() override;
-  void setIdle(bool idle) override;
 
   // implements WindowGetter ---------------------------------------------------
 
@@ -190,7 +188,7 @@ class TwoPartyServer: private kj::TaskSet::ErrorHandler {
 
 public:
   explicit TwoPartyServer(Capability::Client bootstrapInterface,
-      kj::Maybe<kj::Function<kj::String(const kj::Exception&)>> traceEncoder = kj::none);
+      kj::Maybe<kj::Function<kj::String(const kj::Exception&)>> traceEncoder = nullptr);
   // `traceEncoder`, if provided, will be passed on to `rpcSystem.setTraceEncoder()`.
 
   void accept(kj::Own<kj::AsyncIoStream>&& connection);

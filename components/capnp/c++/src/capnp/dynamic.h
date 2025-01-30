@@ -34,6 +34,7 @@
 
 #include "schema.h"
 #include "layout.h"
+#include "message.h"
 #include "any.h"
 #include "capability.h"
 #include <kj/windows-sanity.h>  // work-around macro conflict with `VOID`
@@ -495,9 +496,9 @@ public:
   inline InterfaceSchema getSchema() { return schema; }
 
   Request<DynamicStruct, DynamicStruct> newRequest(
-      InterfaceSchema::Method method, kj::Maybe<MessageSize> sizeHint = kj::none);
+      InterfaceSchema::Method method, kj::Maybe<MessageSize> sizeHint = nullptr);
   Request<DynamicStruct, DynamicStruct> newRequest(
-      kj::StringPtr methodName, kj::Maybe<MessageSize> sizeHint = kj::none);
+      kj::StringPtr methodName, kj::Maybe<MessageSize> sizeHint = nullptr);
 
 private:
   InterfaceSchema schema;
@@ -586,11 +587,11 @@ public:
 
   DynamicStruct::Reader getParams();
   void releaseParams();
-  DynamicStruct::Builder getResults(kj::Maybe<MessageSize> sizeHint = kj::none);
-  DynamicStruct::Builder initResults(kj::Maybe<MessageSize> sizeHint = kj::none);
+  DynamicStruct::Builder getResults(kj::Maybe<MessageSize> sizeHint = nullptr);
+  DynamicStruct::Builder initResults(kj::Maybe<MessageSize> sizeHint = nullptr);
   void setResults(DynamicStruct::Reader value);
   void adoptResults(Orphan<DynamicStruct>&& value);
-  Orphanage getResultsOrphanage(kj::Maybe<MessageSize> sizeHint = kj::none);
+  Orphanage getResultsOrphanage(kj::Maybe<MessageSize> sizeHint = nullptr);
   template <typename SubParams>
   kj::Promise<void> tailCall(Request<SubParams, DynamicStruct>&& tailRequest);
 
@@ -862,6 +863,7 @@ public:
   // transferred to the returned Orphan<T>.
 
   inline bool operator==(decltype(nullptr)) const { return builder == nullptr; }
+  inline bool operator!=(decltype(nullptr)) const { return builder != nullptr; }
 
 private:
   StructSchema schema;
@@ -902,6 +904,7 @@ public:
   // TODO(someday): Support truncate().
 
   inline bool operator==(decltype(nullptr)) const { return builder == nullptr; }
+  inline bool operator!=(decltype(nullptr)) const { return builder != nullptr; }
 
 private:
   ListSchema schema;
@@ -939,6 +942,7 @@ public:
   // transferred to the returned Orphan<T>.
 
   inline bool operator==(decltype(nullptr)) const { return builder == nullptr; }
+  inline bool operator!=(decltype(nullptr)) const { return builder != nullptr; }
 
 private:
   InterfaceSchema schema;
@@ -1315,8 +1319,8 @@ typename DynamicTypeFor<FromServer<T>>::Client toDynamic(kj::Own<T>&& value) {
   return typename FromServer<T>::Client(kj::mv(value));
 }
 
-inline DynamicValue::Reader::Reader(decltype(nullptr)): type(UNKNOWN) {}
-inline DynamicValue::Builder::Builder(decltype(nullptr)): type(UNKNOWN) {}
+inline DynamicValue::Reader::Reader(std::nullptr_t n): type(UNKNOWN) {}
+inline DynamicValue::Builder::Builder(std::nullptr_t n): type(UNKNOWN) {}
 
 #define CAPNP_DECLARE_DYNAMIC_VALUE_CONSTRUCTOR(cppType, typeTag, fieldName) \
 inline DynamicValue::Reader::Reader(cppType value) \
@@ -1480,7 +1484,7 @@ struct DynamicValue::Builder::AsImpl<DynamicValue> {
   }
 };
 
-inline DynamicValue::Pipeline::Pipeline(decltype(nullptr)): type(UNKNOWN) {}
+inline DynamicValue::Pipeline::Pipeline(std::nullptr_t n): type(UNKNOWN) {}
 inline DynamicValue::Pipeline::Pipeline(DynamicStruct::Pipeline&& value)
     : type(STRUCT), structValue(kj::mv(value)) {}
 inline DynamicValue::Pipeline::Pipeline(DynamicCapability::Client&& value)

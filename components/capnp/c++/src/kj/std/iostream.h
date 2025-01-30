@@ -39,8 +39,10 @@ public:
   explicit StdOutputStream(::std::ostream& stream) : stream_(stream) {}
   ~StdOutputStream() noexcept(false) {}
 
-  void write(ArrayPtr<const byte> data) override {
-    stream_.write(data.asChars().begin(), data.size());
+  virtual void write(const void* src, size_t size) override {
+    // Always writes the full size.
+
+    stream_.write((char*)src, size);
   }
 
   virtual void write(ArrayPtr<const ArrayPtr<const byte>> pieces) override {
@@ -49,10 +51,10 @@ public:
     // e.g. use writev() to do the write in a single syscall.
 
     for (auto piece : pieces) {
-      write(piece);
+      write(piece.begin(), piece.size());
     }
   }
-  
+
 private:
   ::std::ostream& stream_;
 
@@ -64,9 +66,11 @@ public:
   explicit StdInputStream(::std::istream& stream) : stream_(stream) {}
   ~StdInputStream() noexcept(false) {}
 
-  size_t tryRead(ArrayPtr<byte> buffer, size_t minBytes) override {
+  virtual size_t tryRead(
+      void* buffer, size_t minBytes, size_t maxBytes) override {
     // Like read(), but may return fewer than minBytes on EOF.
-    stream_.read(buffer.asChars().begin(), buffer.size());
+
+    stream_.read((char*)buffer, maxBytes);
     return stream_.gcount();
   }
 

@@ -26,16 +26,15 @@
 
 CAPNP_BEGIN_HEADER
 
-namespace kj {
-  class OwnFd;
-  using AutoCloseFd = OwnFd;
-}
+namespace kj { class AutoCloseFd; }
 
 namespace capnp {
 
-template <typename VatId, typename ThirdPartyCompletion, typename ThirdPartyToAwait,
-          typename ThirdPartyToContact, typename JoinResult>
+template <typename VatId, typename ProvisionId, typename RecipientId,
+          typename ThirdPartyCapId, typename JoinResult>
 class VatNetwork;
+template <typename SturdyRefObjectId>
+class SturdyRefRestorer;
 
 class MessageReader;
 
@@ -69,26 +68,48 @@ class RpcSystem: public _::RpcSystemBase {
   //
   // See `makeRpcServer()` and `makeRpcClient()` below for convenient syntax for setting up an
   // `RpcSystem` given a `VatNetwork`.
+  //
+  // See `ez-rpc.h` for an even simpler interface for setting up RPC in a typical two-party
+  // client/server scenario.
 
 public:
-  template <typename ThirdPartyCompletion, typename ThirdPartyToAwait,
-            typename ThirdPartyToContact, typename JoinResult>
+  template <typename ProvisionId, typename RecipientId,
+            typename ThirdPartyCapId, typename JoinResult>
   RpcSystem(
-      VatNetwork<VatId, ThirdPartyCompletion, ThirdPartyToAwait, ThirdPartyToContact,
-                 JoinResult>& network,
+      VatNetwork<VatId, ProvisionId, RecipientId, ThirdPartyCapId, JoinResult>& network,
       kj::Maybe<Capability::Client> bootstrapInterface);
 
-  template <typename ThirdPartyCompletion, typename ThirdPartyToAwait,
-            typename ThirdPartyToContact, typename JoinResult>
+  template <typename ProvisionId, typename RecipientId,
+            typename ThirdPartyCapId, typename JoinResult>
   RpcSystem(
-      VatNetwork<VatId, ThirdPartyCompletion, ThirdPartyToAwait, ThirdPartyToContact,
-                 JoinResult>& network,
+      VatNetwork<VatId, ProvisionId, RecipientId, ThirdPartyCapId, JoinResult>& network,
       BootstrapFactory<VatId>& bootstrapFactory);
+
+  template <typename ProvisionId, typename RecipientId,
+            typename ThirdPartyCapId, typename JoinResult,
+            typename LocalSturdyRefObjectId>
+  RpcSystem(
+      VatNetwork<VatId, ProvisionId, RecipientId, ThirdPartyCapId, JoinResult>& network,
+      SturdyRefRestorer<LocalSturdyRefObjectId>& restorer);
 
   RpcSystem(RpcSystem&& other) = default;
 
   Capability::Client bootstrap(typename VatId::Reader vatId);
   // Connect to the given vat and return its bootstrap interface.
+
+  Capability::Client restore(typename VatId::Reader hostId, AnyPointer::Reader objectId)
+      CAPNP_DEPRECATED("Please transition to using a bootstrap interface instead.");
+  // ** DEPRECATED **
+  //
+  // Restores the given SturdyRef from the network and return the capability representing it.
+  //
+  // `hostId` identifies the host from which to request the ref, in the format specified by the
+  // `VatNetwork` in use.  `objectId` is the object ID in whatever format is expected by said host.
+  //
+  // This method will be removed in a future version of Cap'n Proto. Instead, please transition
+  // to using bootstrap(), which is equivalent to calling restore() with a null `objectId`.
+  // You may emulate the old concept of object IDs by exporting a bootstrap interface which has
+  // methods that can be used to obtain other capabilities by ID.
 
   void setFlowLimit(size_t words);
   // Sets the incoming call flow limit. If more than `words` worth of call messages have not yet
@@ -144,11 +165,10 @@ public:
   // without restarting. All servers should therefore call run() and handle failures in some way.
 };
 
-template <typename VatId, typename ThirdPartyCompletion, typename ThirdPartyToAwait,
-          typename ThirdPartyToContact, typename JoinResult>
+template <typename VatId, typename ProvisionId, typename RecipientId,
+          typename ThirdPartyCapId, typename JoinResult>
 RpcSystem<VatId> makeRpcServer(
-    VatNetwork<VatId, ThirdPartyCompletion, ThirdPartyToAwait, ThirdPartyToContact,
-               JoinResult>& network,
+    VatNetwork<VatId, ProvisionId, RecipientId, ThirdPartyCapId, JoinResult>& network,
     Capability::Client bootstrapInterface);
 // Make an RPC server.  Typical usage (e.g. in a main() function):
 //
@@ -158,30 +178,77 @@ RpcSystem<VatId> makeRpcServer(
 //    MyMainInterface::Client bootstrap = makeMain();
 //    auto server = makeRpcServer(network, bootstrap);
 //    kj::NEVER_DONE.wait(waitScope);  // run forever
+//
+// See also ez-rpc.h, which has simpler instructions for the common case of a two-party
+// client-server RPC connection.
 
-template <typename VatId, typename ThirdPartyCompletion, typename ThirdPartyToAwait,
-          typename ThirdPartyToContact, typename JoinResult>
+template <typename VatId, typename ProvisionId, typename RecipientId,
+          typename ThirdPartyCapId, typename JoinResult>
 RpcSystem<VatId> makeRpcServer(
-    VatNetwork<VatId, ThirdPartyCompletion, ThirdPartyToAwait, ThirdPartyToContact,
-               JoinResult>& network,
+    VatNetwork<VatId, ProvisionId, RecipientId, ThirdPartyCapId, JoinResult>& network,
     BootstrapFactory<VatId>& bootstrapFactory);
 // Make an RPC server that can serve different bootstrap interfaces to different clients via a
 // BootstrapInterface.
 
-template <typename VatId, typename ThirdPartyCompletion,
-          typename ThirdPartyToAwait, typename ThirdPartyToContact, typename JoinResult>
+template <typename VatId, typename LocalSturdyRefObjectId,
+          typename ProvisionId, typename RecipientId, typename ThirdPartyCapId, typename JoinResult>
+RpcSystem<VatId> makeRpcServer(
+    VatNetwork<VatId, ProvisionId, RecipientId, ThirdPartyCapId, JoinResult>& network,
+    SturdyRefRestorer<LocalSturdyRefObjectId>& restorer)
+    CAPNP_DEPRECATED("Please transition to using a bootstrap interface instead.");
+// ** DEPRECATED **
+//
+// Create an RPC server which exports multiple main interfaces by object ID. The `restorer` object
+// can be used to look up objects by ID.
+//
+// Please transition to exporting only one interface, which is known as the "bootstrap" interface.
+// For backwards-compatibility with old clients, continue to implement SturdyRefRestorer, but
+// return the new bootstrap interface when the request object ID is null. When new clients connect
+// and request the bootstrap interface, they will get that interface. Eventually, once all clients
+// are updated to request only the bootstrap interface, stop implementing SturdyRefRestorer and
+// switch to passing the bootstrap capability itself as the second parameter to `makeRpcServer()`.
+
+template <typename VatId, typename ProvisionId,
+          typename RecipientId, typename ThirdPartyCapId, typename JoinResult>
 RpcSystem<VatId> makeRpcClient(
-    VatNetwork<VatId, ThirdPartyCompletion, ThirdPartyToAwait, ThirdPartyToContact,
-               JoinResult>& network);
+    VatNetwork<VatId, ProvisionId, RecipientId, ThirdPartyCapId, JoinResult>& network);
 // Make an RPC client.  Typical usage (e.g. in a main() function):
 //
 //    MyEventLoop eventLoop;
 //    kj::WaitScope waitScope(eventLoop);
 //    MyNetwork network;
 //    auto client = makeRpcClient(network);
-//    MyCapability::Client cap = client.bootstrap(hostId).castAs<MyCapability>();
+//    MyCapability::Client cap = client.restore(hostId, objId).castAs<MyCapability>();
 //    auto response = cap.fooRequest().send().wait(waitScope);
 //    handleMyResponse(response);
+//
+// See also ez-rpc.h, which has simpler instructions for the common case of a two-party
+// client-server RPC connection.
+
+template <typename SturdyRefObjectId>
+class SturdyRefRestorer: public _::SturdyRefRestorerBase {
+  // ** DEPRECATED **
+  //
+  // In Cap'n Proto 0.4.x, applications could export multiple main interfaces identified by
+  // object IDs. The callback used to map object IDs to objects was `SturdyRefRestorer`, as we
+  // imagined this would eventually be used for restoring SturdyRefs as well. In practice, it was
+  // never used for real SturdyRefs, only for exporting singleton objects under well-known names.
+  //
+  // The new preferred strategy is to export only a _single_ such interface, called the
+  // "bootstrap interface". That interface can itself have methods for obtaining other objects, of
+  // course, but that is up to the app. `SturdyRefRestorer` exists for backwards-compatibility.
+  //
+  // Hint:  Use SturdyRefRestorer<capnp::Text> to define a server that exports services under
+  //   string names.
+
+public:
+  virtual Capability::Client restore(typename SturdyRefObjectId::Reader ref) CAPNP_DEPRECATED(
+      "Please transition to using bootstrap interfaces instead of SturdyRefRestorer.") = 0;
+  // Restore the given object, returning a capability representing it.
+
+private:
+  Capability::Client baseRestore(AnyPointer::Reader ref) override final;
+};
 
 // =======================================================================================
 // VatNetwork
@@ -216,13 +283,13 @@ public:
   // Get the message body, to be interpreted by the caller.  (The standard RPC implementation
   // interprets it as a Message as defined in rpc.capnp.)
 
-  virtual kj::ArrayPtr<kj::OwnFd> getAttachedFds() { return nullptr; }
+  virtual kj::ArrayPtr<kj::AutoCloseFd> getAttachedFds() { return nullptr; }
   // If the transport supports attached file descriptors and some were attached to this message,
   // returns them. Otherwise returns an empty array. It is intended that the caller will move the
   // FDs out of this table when they are consumed, possibly leaving behind a null slot. Callers
   // should be careful to check if an FD was already consumed by comparing the slot with `nullptr`.
   // (We don't use Maybe here because moving from a Maybe doesn't make it null, so it would only
-  // add confusion. Moving from an OwnFd does in fact make it null.)
+  // add confusion. Moving from an AutoCloseFd does in fact make it null.)
 
   virtual size_t sizeInWords() = 0;
   // Get the total size of the message, for flow control purposes. Although the caller could
@@ -292,8 +359,8 @@ public:
   // The window size used by the default implementation of Connection::newStream().
 };
 
-template <typename VatId, typename ThirdPartyCompletion, typename ThirdPartyToAwait,
-          typename ThirdPartyToContact, typename JoinResult>
+template <typename VatId, typename ProvisionId, typename RecipientId,
+          typename ThirdPartyCapId, typename JoinResult>
 class VatNetwork: public _::VatNetworkBase {
   // Cap'n Proto RPC operates between vats, where a "vat" is some sort of host of objects.
   // Typically one Cap'n Proto process (in the Unix sense) is one vat.  The RPC system is what
@@ -305,14 +372,15 @@ class VatNetwork: public _::VatNetworkBase {
   // to manage object references and make method calls.
   //
   // The most common implementation of VatNetwork is TwoPartyVatNetwork (rpc-twoparty.h).  Most
-  // simple client-server apps will want to use it.
+  // simple client-server apps will want to use it.  (You may even want to use the EZ RPC
+  // interfaces in `ez-rpc.h` and avoid all of this.)
   //
   // TODO(someday):  Provide a standard implementation for the public internet.
 
 public:
   class Connection;
 
-  struct ConnectionAndThirdPartyCompletion {
+  struct ConnectionAndProvisionId {
     // Result of connecting to a vat introduced by another vat.
 
     kj::Own<Connection> connection;
@@ -322,9 +390,9 @@ public:
     // An already-allocated `OutgoingRpcMessage` associated with `connection`.  The RPC system will
     // construct this as an `Accept` message and send it.
 
-    Orphan<ThirdPartyCompletion> provision;
-    // A `ThirdPartyCompletion` already allocated inside `firstMessage`, which the RPC system will
-    // use to build the `Accept` message.
+    Orphan<ProvisionId> provisionId;
+    // A `ProvisionId` already allocated inside `firstMessage`, which the RPC system will use to
+    // build the `Accept` message.
   };
 
   class Connection: public _::VatNetworkBase::Connection {
@@ -381,140 +449,8 @@ public:
     // Waits until all outgoing messages have been sent, then shuts down the outgoing stream. The
     // returned promise resolves after shutdown is complete.
 
-    virtual void setIdle(bool idle) override {}
-    // Called by the RPC system whenever the connection transitions into or out of the "idle"
-    // state. "Idle" means that there are no outstanding calls or capabilities held over this
-    // connection in either direction. When a connection is idle, there are only two ways that
-    // it can become no longer idle:
-    //
-    // a. A new incoming messages is received on this connection.
-    // b. A call to some other VatNetwork method (e.g. `connect()` or `accept()`) returns this same
-    //    Connection object again.
-    //
-    // In either of these two cases, the connection is no longer idle. The RpcSystem will call
-    // `setIdle(false)` and then continue te service the connection.
-    //
-    // The RpcSystem will never send a message on a connection while it is idle.
-    //
-    // A VatNetwork may be able to use `setIdle()` to opportunistically end connections that are
-    // no longer needed. This is easiest to do with networks that do not reuse incoming connections
-    // for outgoing requests, i.e. `connect()` never returns a connection object previously
-    // returned by `accept()`. The `RpcSystem` always sends bootstrap requests on connections
-    // returned by `connect()`. So, in this case, it will only *receive* bootstrap requests on
-    // incoming connections returned by `accept()`. Hence, when an outgoing connection becomes
-    // idle, the VatNetwork can assume that no more messages will be received on it at all, unless
-    // a message is sent first to start a new bootstrap. In this case, the VatNetwork can safely
-    // close the connection instead.
-    //
-    // NOTE: If implementing such behavior, be careful about event loop concurrency. It is possible
-    //   that your implementation recently returned a result from receiveIncomingMessage(), but
-    //   this result is still in the event queue, and the RpcSystem has not received it yet. One
-    //   way to avoid this is to `co_await kj::yieldUntilQueueEmpty()` (or use `kj::evalLast()`)
-    //   to make sure any such return values have been delivered. If `setIdle(false)` is called in
-    //   the meantime, cancel what you were going to do.
-
-    // Level 3 features ----------------------------------------------
-
-    virtual bool canIntroduceTo(Connection& other) { return false; }
-    // Determines whether three-party handoff is supported, i.e. introduceTo(other, ...) can be
-    // called. The caller promises that `other` is a `Connection` produced by the same
-    // `VatNetwork`.
-    //
-    // Returns false if an introduction is not possible, in which case the RPC system must fall
-    // back to proxying. This is the default implementation for VatNetworks that do not support
-    // three-party handoff.
-
-    virtual void introduceTo(Connection& other,
-        typename ThirdPartyToContact::Builder otherContactInfo,
-        typename ThirdPartyToAwait::Builder thisAwaitInfo) { _::throwNo3ph(); }
-    // Introduce the vat at the other end of this connection ("this peer") to the vat at the other
-    // end of `other` ("the other peeer").
-    //
-    // `otherContactInfo` will be filled in with information needed to contact the other peer. This
-    // information should be passed to this peer. Conversely, `thisAwaitInfo` will be filled in with
-    // information identifying this peer; it should be passed to the other peer.
-    //
-    // This will not be called unless a previous call to `canIntroduceTo(other)` returned true.
-    //
-    // TODO(someday): Define a way to attach FDs here, useful for 3PH between local processes over
-    //   unix sockets.
-
-    virtual kj::Maybe<kj::Own<Connection>> connectToIntroduced(
-        typename ThirdPartyToContact::Reader contact,
-        typename ThirdPartyCompletion::Builder completion) { _::throwNo3ph(); }
-    // Given a `ThirdPartyToContact` that was received across this connection, form a direct
-    // connection to that contact, and fill in `completion` as appropriate to send to that contact
-    // in order to complete a three-party operation.
-    //
-    // Simlar to VatNetwork::connect(), this returns null if the target is actually the current
-    // vat, and could also return an existing `Connection` if there already is one connected to
-    // the requested Vat.
-
-    virtual bool canForwardThirdPartyToContact(
-        typename ThirdPartyToContact::Reader contact, Connection& destination) { return false; }
-    // Determines whether `contact`, a `ThirdPartyToContact` received over *this* connection, can
-    // be forwarded to another (fourth) party without actually connecting to `contact` first, i.e.
-    // `forwardThirdPartyToContact(contact, destination, ...)` can be called. The caller promises
-    // that `destination` is a `Connection` produced by the same `VatNetwork`.
-    //
-    // Returns true if forwarding can be accomplished without actually connecting to `contact`, or
-    // returns false if the VatNetwork does not support this. In the latter case, the RpcSystem
-    // will respond by forming a direct connection to `contact` and then initiating a second
-    // handoff to the destination.
-
-    virtual void forwardThirdPartyToContact(
-        typename ThirdPartyToContact::Reader contact, Connection& destination,
-        typename ThirdPartyToContact::Builder result) { _::throwNo3ph(); }
-    // Given `contact`, a `ThirdPartyToContact` received over *this* connection, construct a new
-    // `ThirdPartyToContact` that is valid to send over `destination` representing the same
-    // three-party handoff.
-
-    virtual kj::Own<void> awaitThirdParty(
-        typename ThirdPartyToAwait::Reader party,
-        kj::Rc<kj::Refcounted> value) { _::throwNo3ph(); }
-    // Expect completion of a three-party handoff that is supposed to rendezvous at this node.
-    //
-    // `ThirdPartyToAwait` was received over this connection. A corresponding call to
-    // `completeThirdParty()` will receive `value` as its result. Multiple matching calls to
-    // `completeThirdParty()` are permitted and will all receive references to the value, hence
-    // why it is refcounted. Once the returned `Own<void>` is dropped, `value` will be dropped
-    // and any later matching call to `completeThirdParty()` will either throw or just hang.
-
-    virtual kj::Promise<kj::Rc<kj::Refcounted>> completeThirdParty(
-        typename ThirdPartyCompletion::Reader completion) { _::throwNo3ph(); }
-    // Complete a three-party handoff that is supposed to rendezvous at this node.
-    //
-    // `ThirdPartyCompletion` was received over this connection. The promise resolves when some
-    // other connection on this VatNetwork calls `awaitThirdParty()` with the corresponding
-    // `ThirdPartyToAwait`. The two calls can happen in any order; `completeThirdParty()` will
-    // wait for a corresponding `awaitThirdParty()` if it hasn't happened already.
-    //
-    // Returns a reference to the `value` passed to `awaitThirdParty()`.
-
-    virtual kj::Array<byte> generateEmbargoId() override { _::throwNo3ph(); }
-    // Generate an embargo ID for a three-party handoff. The returned ID must be unique among all
-    // embargos on a particular provision. If the VatNetwork does not support forwarding (i.e.
-    // canForwardThirdPartyToContact() always returns false), then it can safely return null (an
-    // empty array), since there can be no more than one embargo per provision in this case.
-
   private:
     AnyStruct::Reader baseGetPeerVatId() override;
-    bool canIntroduceTo(VatNetworkBase::Connection& other) override;
-    void introduceTo(VatNetworkBase::Connection& other,
-        AnyPointer::Builder otherContactInfo,
-        AnyPointer::Builder thisAwaitInfo) override;
-    kj::Maybe<kj::Own<VatNetworkBase::Connection>> connectToIntroduced(
-        AnyPointer::Reader contact,
-        AnyPointer::Builder completion) override;
-    bool canForwardThirdPartyToContact(
-        AnyPointer::Reader contact, VatNetworkBase::Connection& destination) override;
-    void forwardThirdPartyToContact(
-        AnyPointer::Reader contact, VatNetworkBase::Connection& destination,
-        AnyPointer::Builder result) override;
-    kj::Own<void> awaitThirdParty(
-        AnyPointer::Reader party, kj::Rc<kj::Refcounted> value) override;
-    kj::Promise<kj::Rc<kj::Refcounted>> completeThirdParty(AnyPointer::Reader completion) override;
-    // Implements VatNetworkBase::Connection methods in terms of templated methods.
   };
 
   // Level 0 features ------------------------------------------------
@@ -528,15 +464,6 @@ public:
   // hearing back from the server at all, to avoid a round trip.
   //
   // Returns nullptr if `hostId` refers to the local host.
-  //
-  // The RpcSystem will call `connect()` every time the application invokes `bootstrap(vatId)`,
-  // even if the vatId given is the same as a previous call. It is entirely up to the VatNetwork
-  // implementation to decide whether to reuse an existing connection or make a new one each time.
-  // If the VatNetwork returns a `Connection` object that it has returned before, the RpcSystem
-  // will recognize this and will multiplex the new session on that existing connection.
-  //
-  // Similarly, `connect()` can return a connection that was previously returned by `accept()`, if
-  // the VatNetwork knows that that connection goes to the right place.
 
   virtual kj::Promise<kj::Own<Connection>> accept() = 0;
   // Wait for the next incoming connection and return it.
@@ -561,127 +488,67 @@ Capability::Client BootstrapFactory<VatId>::baseCreateFor(AnyStruct::Reader clie
   return createFor(clientId.as<VatId>());
 }
 
-template <typename SturdyRef, typename ThirdPartyCompletion, typename ThirdPartyToAwait,
-          typename ThirdPartyToContact, typename JoinResult>
+template <typename SturdyRef, typename ProvisionId, typename RecipientId,
+          typename ThirdPartyCapId, typename JoinResult>
 kj::Maybe<kj::Own<_::VatNetworkBase::Connection>>
-    VatNetwork<SturdyRef, ThirdPartyCompletion, ThirdPartyToAwait, ThirdPartyToContact,
-               JoinResult>::baseConnect(AnyStruct::Reader ref) {
+    VatNetwork<SturdyRef, ProvisionId, RecipientId, ThirdPartyCapId, JoinResult>::
+    baseConnect(AnyStruct::Reader ref) {
   auto maybe = connect(ref.as<SturdyRef>());
   return maybe.map([](kj::Own<Connection>& conn) -> kj::Own<_::VatNetworkBase::Connection> {
     return kj::mv(conn);
   });
 }
 
-template <typename SturdyRef, typename ThirdPartyCompletion, typename ThirdPartyToAwait,
-          typename ThirdPartyToContact, typename JoinResult>
+template <typename SturdyRef, typename ProvisionId, typename RecipientId,
+          typename ThirdPartyCapId, typename JoinResult>
 kj::Promise<kj::Own<_::VatNetworkBase::Connection>>
-    VatNetwork<SturdyRef, ThirdPartyCompletion, ThirdPartyToAwait, ThirdPartyToContact,
-               JoinResult>::baseAccept() {
+    VatNetwork<SturdyRef, ProvisionId, RecipientId, ThirdPartyCapId, JoinResult>::baseAccept() {
   return accept().then(
       [](kj::Own<Connection>&& connection) -> kj::Own<_::VatNetworkBase::Connection> {
     return kj::mv(connection);
   });
 }
 
-template <typename SturdyRef, typename ThirdPartyCompletion, typename ThirdPartyToAwait,
-          typename ThirdPartyToContact, typename JoinResult>
+template <typename SturdyRef, typename ProvisionId, typename RecipientId,
+          typename ThirdPartyCapId, typename JoinResult>
 AnyStruct::Reader VatNetwork<
-    SturdyRef, ThirdPartyCompletion, ThirdPartyToAwait, ThirdPartyToContact, JoinResult>::
+    SturdyRef, ProvisionId, RecipientId, ThirdPartyCapId, JoinResult>::
     Connection::baseGetPeerVatId() {
   return getPeerVatId();
 }
 
-template <typename SturdyRef, typename ThirdPartyCompletion, typename ThirdPartyToAwait,
-          typename ThirdPartyToContact, typename JoinResult>
-bool VatNetwork<
-    SturdyRef, ThirdPartyCompletion, ThirdPartyToAwait, ThirdPartyToContact, JoinResult>::
-    Connection::canIntroduceTo(VatNetworkBase::Connection& other) {
-  return canIntroduceTo(kj::downcast<Connection>(other));
-}
-
-template <typename SturdyRef, typename ThirdPartyCompletion, typename ThirdPartyToAwait,
-          typename ThirdPartyToContact, typename JoinResult>
-void VatNetwork<
-    SturdyRef, ThirdPartyCompletion, ThirdPartyToAwait, ThirdPartyToContact, JoinResult>::
-    Connection::introduceTo(
-        VatNetworkBase::Connection& other,
-        AnyPointer::Builder otherContactInfo,
-        AnyPointer::Builder thisAwaitInfo) {
-  return introduceTo(kj::downcast<Connection>(other),
-      otherContactInfo.initAs<ThirdPartyToContact>(),
-      thisAwaitInfo.initAs<ThirdPartyToAwait>());
-}
-
-template <typename SturdyRef, typename ThirdPartyCompletion, typename ThirdPartyToAwait,
-          typename ThirdPartyToContact, typename JoinResult>
-kj::Maybe<kj::Own<_::VatNetworkBase::Connection>> VatNetwork<
-    SturdyRef, ThirdPartyCompletion, ThirdPartyToAwait, ThirdPartyToContact, JoinResult>::
-    Connection::connectToIntroduced(
-        AnyPointer::Reader contact,
-        AnyPointer::Builder completion) {
-  return connectToIntroduced(
-      contact.getAs<ThirdPartyToContact>(),
-      completion.initAs<ThirdPartyCompletion>());
-}
-
-template <typename SturdyRef, typename ThirdPartyCompletion, typename ThirdPartyToAwait,
-          typename ThirdPartyToContact, typename JoinResult>
-bool VatNetwork<
-    SturdyRef, ThirdPartyCompletion, ThirdPartyToAwait, ThirdPartyToContact, JoinResult>::
-    Connection::canForwardThirdPartyToContact(
-        AnyPointer::Reader contact, VatNetworkBase::Connection& destination) {
-  return canForwardThirdPartyToContact(
-      contact.getAs<ThirdPartyToContact>(),
-      kj::downcast<Connection>(destination));
-}
-
-template <typename SturdyRef, typename ThirdPartyCompletion, typename ThirdPartyToAwait,
-          typename ThirdPartyToContact, typename JoinResult>
-void VatNetwork<
-    SturdyRef, ThirdPartyCompletion, ThirdPartyToAwait, ThirdPartyToContact, JoinResult>::
-    Connection::forwardThirdPartyToContact(
-      AnyPointer::Reader contact, VatNetworkBase::Connection& destination,
-      AnyPointer::Builder result) {
-  forwardThirdPartyToContact(
-      contact.getAs<ThirdPartyToContact>(),
-      kj::downcast<Connection>(destination),
-      result.initAs<ThirdPartyToContact>());
-}
-
-template <typename SturdyRef, typename ThirdPartyCompletion, typename ThirdPartyToAwait,
-          typename ThirdPartyToContact, typename JoinResult>
-kj::Own<void> VatNetwork<
-    SturdyRef, ThirdPartyCompletion, ThirdPartyToAwait, ThirdPartyToContact, JoinResult>::
-    Connection::awaitThirdParty(
-        AnyPointer::Reader party, kj::Rc<kj::Refcounted> value) {
-  return awaitThirdParty(party.getAs<ThirdPartyToAwait>(), kj::mv(value));
-}
-
-template <typename SturdyRef, typename ThirdPartyCompletion, typename ThirdPartyToAwait,
-          typename ThirdPartyToContact, typename JoinResult>
-kj::Promise<kj::Rc<kj::Refcounted>> VatNetwork<
-    SturdyRef, ThirdPartyCompletion, ThirdPartyToAwait, ThirdPartyToContact, JoinResult>::
-    Connection::completeThirdParty(AnyPointer::Reader completion) {
-  return completeThirdParty(completion.getAs<ThirdPartyCompletion>());
+template <typename SturdyRef>
+Capability::Client SturdyRefRestorer<SturdyRef>::baseRestore(AnyPointer::Reader ref) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  return restore(ref.getAs<SturdyRef>());
+#pragma GCC diagnostic pop
 }
 
 template <typename VatId>
-template <typename ThirdPartyCompletion, typename ThirdPartyToAwait,
-          typename ThirdPartyToContact, typename JoinResult>
+template <typename ProvisionId, typename RecipientId,
+          typename ThirdPartyCapId, typename JoinResult>
 RpcSystem<VatId>::RpcSystem(
-      VatNetwork<VatId, ThirdPartyCompletion, ThirdPartyToAwait, ThirdPartyToContact,
-                 JoinResult>& network,
+      VatNetwork<VatId, ProvisionId, RecipientId, ThirdPartyCapId, JoinResult>& network,
       kj::Maybe<Capability::Client> bootstrap)
     : _::RpcSystemBase(network, kj::mv(bootstrap)) {}
 
 template <typename VatId>
-template <typename ThirdPartyCompletion, typename ThirdPartyToAwait,
-          typename ThirdPartyToContact, typename JoinResult>
+template <typename ProvisionId, typename RecipientId,
+          typename ThirdPartyCapId, typename JoinResult>
 RpcSystem<VatId>::RpcSystem(
-      VatNetwork<VatId, ThirdPartyCompletion, ThirdPartyToAwait, ThirdPartyToContact,
-                 JoinResult>& network,
+      VatNetwork<VatId, ProvisionId, RecipientId, ThirdPartyCapId, JoinResult>& network,
       BootstrapFactory<VatId>& bootstrapFactory)
     : _::RpcSystemBase(network, bootstrapFactory) {}
+
+template <typename VatId>
+template <typename ProvisionId, typename RecipientId,
+          typename ThirdPartyCapId, typename JoinResult,
+          typename LocalSturdyRefObjectId>
+RpcSystem<VatId>::RpcSystem(
+      VatNetwork<VatId, ProvisionId, RecipientId, ThirdPartyCapId, JoinResult>& network,
+      SturdyRefRestorer<LocalSturdyRefObjectId>& restorer)
+    : _::RpcSystemBase(network, restorer) {}
 
 template <typename VatId>
 Capability::Client RpcSystem<VatId>::bootstrap(typename VatId::Reader vatId) {
@@ -689,34 +556,45 @@ Capability::Client RpcSystem<VatId>::bootstrap(typename VatId::Reader vatId) {
 }
 
 template <typename VatId>
+Capability::Client RpcSystem<VatId>::restore(
+    typename VatId::Reader hostId, AnyPointer::Reader objectId) {
+  return baseRestore(_::PointerHelpers<VatId>::getInternalReader(hostId), objectId);
+}
+
+template <typename VatId>
 inline void RpcSystem<VatId>::setFlowLimit(size_t words) {
   baseSetFlowLimit(words);
 }
 
-template <typename VatId, typename ThirdPartyCompletion, typename ThirdPartyToAwait,
-          typename ThirdPartyToContact, typename JoinResult>
+template <typename VatId, typename ProvisionId, typename RecipientId,
+          typename ThirdPartyCapId, typename JoinResult>
 RpcSystem<VatId> makeRpcServer(
-    VatNetwork<VatId, ThirdPartyCompletion, ThirdPartyToAwait, ThirdPartyToContact,
-               JoinResult>& network,
+    VatNetwork<VatId, ProvisionId, RecipientId, ThirdPartyCapId, JoinResult>& network,
     Capability::Client bootstrapInterface) {
   return RpcSystem<VatId>(network, kj::mv(bootstrapInterface));
 }
 
-template <typename VatId, typename ThirdPartyCompletion, typename ThirdPartyToAwait,
-          typename ThirdPartyToContact, typename JoinResult>
+template <typename VatId, typename ProvisionId, typename RecipientId,
+          typename ThirdPartyCapId, typename JoinResult>
 RpcSystem<VatId> makeRpcServer(
-    VatNetwork<VatId, ThirdPartyCompletion, ThirdPartyToAwait, ThirdPartyToContact,
-               JoinResult>& network,
+    VatNetwork<VatId, ProvisionId, RecipientId, ThirdPartyCapId, JoinResult>& network,
     BootstrapFactory<VatId>& bootstrapFactory) {
   return RpcSystem<VatId>(network, bootstrapFactory);
 }
 
-template <typename VatId, typename ThirdPartyCompletion,
-          typename ThirdPartyToAwait, typename ThirdPartyToContact, typename JoinResult>
+template <typename VatId, typename LocalSturdyRefObjectId,
+          typename ProvisionId, typename RecipientId, typename ThirdPartyCapId, typename JoinResult>
+RpcSystem<VatId> makeRpcServer(
+    VatNetwork<VatId, ProvisionId, RecipientId, ThirdPartyCapId, JoinResult>& network,
+    SturdyRefRestorer<LocalSturdyRefObjectId>& restorer) {
+  return RpcSystem<VatId>(network, restorer);
+}
+
+template <typename VatId, typename ProvisionId,
+          typename RecipientId, typename ThirdPartyCapId, typename JoinResult>
 RpcSystem<VatId> makeRpcClient(
-    VatNetwork<VatId, ThirdPartyCompletion, ThirdPartyToAwait, ThirdPartyToContact,
-               JoinResult>& network) {
-  return RpcSystem<VatId>(network, kj::none);
+    VatNetwork<VatId, ProvisionId, RecipientId, ThirdPartyCapId, JoinResult>& network) {
+  return RpcSystem<VatId>(network, nullptr);
 }
 
 }  // namespace capnp

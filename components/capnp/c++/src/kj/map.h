@@ -289,7 +289,7 @@ public:
 
   template <typename... Params>
   inline bool contains(Params&&... params) const {
-    return this->find(kj::fwd<Params>(params)...) != kj::none;
+    return this->find(kj::fwd<Params>(params)...) != nullptr;
   }
 };
 

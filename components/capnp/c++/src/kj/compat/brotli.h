@@ -55,7 +55,7 @@ constexpr size_t KJ_BROTLI_BUF_SIZE = 8192;
 
 class BrotliOutputContext final {
 public:
-  BrotliOutputContext(kj::Maybe<int> compressionLevel, kj::Maybe<int> windowBits = kj::none);
+  BrotliOutputContext(kj::Maybe<int> compressionLevel, kj::Maybe<int> windowBits = nullptr);
   ~BrotliOutputContext() noexcept(false);
   KJ_DISALLOW_COPY_AND_MOVE(BrotliOutputContext);
 
@@ -78,11 +78,11 @@ private:
 
 class BrotliInputStream final: public InputStream {
 public:
-  BrotliInputStream(InputStream& inner, kj::Maybe<int> windowBits = kj::none);
+  BrotliInputStream(InputStream& inner, kj::Maybe<int> windowBits = nullptr);
   ~BrotliInputStream() noexcept(false);
   KJ_DISALLOW_COPY_AND_MOVE(BrotliInputStream);
 
-  size_t tryRead(ArrayPtr<byte> buffer, size_t minBytes) override;
+  size_t tryRead(void* buffer, size_t minBytes, size_t maxBytes) override;
 
 private:
   InputStream& inner;
@@ -96,7 +96,7 @@ private:
   size_t availableIn;
   bool firstInput = true;
 
-  size_t readImpl(ArrayPtr<byte> buffer, size_t minBytes, size_t alreadyRead);
+  size_t readImpl(byte* buffer, size_t minBytes, size_t maxBytes, size_t alreadyRead);
 };
 
 class BrotliOutputStream final: public OutputStream {
@@ -112,8 +112,7 @@ public:
   ~BrotliOutputStream() noexcept(false);
   KJ_DISALLOW_COPY_AND_MOVE(BrotliOutputStream);
 
-  void write(ArrayPtr<const byte> data) override;
-
+  void write(const void* buffer, size_t size) override;
   using OutputStream::write;
 
   inline void flush() {
@@ -130,7 +129,7 @@ private:
 
 class BrotliAsyncInputStream final: public AsyncInputStream {
 public:
-  BrotliAsyncInputStream(AsyncInputStream& inner, kj::Maybe<int> windowBits = kj::none);
+  BrotliAsyncInputStream(AsyncInputStream& inner, kj::Maybe<int> windowBits = nullptr);
   ~BrotliAsyncInputStream() noexcept(false);
   KJ_DISALLOW_COPY_AND_MOVE(BrotliAsyncInputStream);
 
@@ -161,7 +160,7 @@ public:
                           int windowBits = _::KJ_BROTLI_MAX_DEC_WBITS);
   KJ_DISALLOW_COPY_AND_MOVE(BrotliAsyncOutputStream);
 
-  Promise<void> write(ArrayPtr<const byte> buffer) override;
+  Promise<void> write(const void* buffer, size_t size) override;
   Promise<void> write(ArrayPtr<const ArrayPtr<const byte>> pieces) override;
 
   Promise<void> whenWriteDisconnected() override { return inner.whenWriteDisconnected(); }

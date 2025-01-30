@@ -25,7 +25,6 @@
 #include <kj/memory.h>
 #include <kj/mutex.h>
 #include <kj/debug.h>
-#include "pointer-helpers.h"
 #include <kj/vector.h>
 #include "common.h"
 #include "layout.h"
@@ -128,7 +127,7 @@ public:
 private:
   ReaderOptions options;
 
-#if defined(__EMSCRIPTEN__) || (defined(__APPLE__) && (defined(__ppc__) || defined(__i386__)))
+#if defined(__EMSCRIPTEN__) || (defined(__APPLE__) && defined(__ppc__))
   static constexpr size_t arenaSpacePadding = 19;
 #else
   static constexpr size_t arenaSpacePadding = 18;

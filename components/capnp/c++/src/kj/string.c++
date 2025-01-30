@@ -26,9 +26,6 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <stdint.h>
-#if !defined(_WIN32)
-#include <string.h>
-#endif
 
 namespace kj {
 
@@ -50,12 +47,12 @@ long long parseSigned(const StringPtr& s, long long min, long long max) {
 }
 
 Maybe<long long> tryParseSigned(const StringPtr& s, long long min, long long max) {
-  if (s == nullptr) { return kj::none; } // String does not contain valid number.
+  if (s == nullptr) { return nullptr; } // String does not contain valid number.
   char *endPtr;
   errno = 0;
   auto value = strtoll(s.begin(), &endPtr, isHex(s.cStr()) ? 16 : 10);
   if (endPtr != s.end() || errno == ERANGE || value < min || max < value) {
-    return kj::none;
+    return nullptr;
   }
   return value;
 }
@@ -74,11 +71,11 @@ unsigned long long parseUnsigned(const StringPtr& s, unsigned long long max) {
 }
 
 Maybe<unsigned long long> tryParseUnsigned(const StringPtr& s, unsigned long long max) {
-  if (s == nullptr) { return kj::none; } // String does not contain valid number.
+  if (s == nullptr) { return nullptr; } // String does not contain valid number.
   char *endPtr;
   errno = 0;
   auto value = strtoull(s.begin(), &endPtr, isHex(s.cStr()) ? 16 : 10);
-  if (endPtr != s.end() || errno == ERANGE || max < value || s[0] == '-') { return kj::none; }
+  if (endPtr != s.end() || errno == ERANGE || max < value || s[0] == '-') { return nullptr; }
   return value;
 }
 
@@ -157,7 +154,7 @@ template <typename T>
 static CappedArray<char, sizeof(T) * 2 + 1> hexImpl(T i) {
   // We don't use sprintf() because it's not async-signal-safe (for strPreallocated()).
   CappedArray<char, sizeof(T) * 2 + 1> result;
-  uint8_t reverse[sizeof(T) * 2]{};
+  uint8_t reverse[sizeof(T) * 2];
   uint8_t* p = reverse;
   if (i == 0) {
     *p++ = 0;
@@ -209,7 +206,7 @@ static CappedArray<char, sizeof(T) * 3 + 2> stringifyImpl(T i) {
   // unsigned first, then negate it, to avoid ubsan complaining.
   Unsigned u = i;
   if (negative) u = -u;
-  uint8_t reverse[sizeof(T) * 3 + 1]{};
+  uint8_t reverse[sizeof(T) * 3 + 1];
   uint8_t* p = reverse;
   if (u == 0) {
     *p++ = 0;
@@ -522,7 +519,7 @@ kj::String LocalizeRadix(const char* input, const char* radix_pos) {
   // tell, this is the only portable, thread-safe way to get the C library
   // to divuldge the locale's radix character.  No, localeconv() is NOT
   // thread-safe.
-  char temp[16]{};
+  char temp[16];
   int size = snprintf(temp, sizeof(temp), "%.1f", 1.5);
   KJ_ASSERT(temp[0] == '1');
   KJ_ASSERT(temp[size-1] == '5');
@@ -617,11 +614,11 @@ double parseDouble(const StringPtr& s) {
 }
 
 Maybe<double> tryParseDouble(const StringPtr& s) {
-  if(s == nullptr) { return kj::none; }
+  if(s == nullptr) { return nullptr; }
   char *endPtr;
   errno = 0;
   auto value = _::NoLocaleStrtod(s.begin(), &endPtr);
-  if (endPtr != s.end()) { return kj::none; }
+  if (endPtr != s.end()) { return nullptr; }
 #if _WIN32 || __CYGWIN__ || __BIONIC__
   if (isNaN(value)) {
     return kj::nan();
@@ -637,50 +634,5 @@ template <> float StringPtr::parseAs<float>() const { return _::parseDouble(*thi
 
 template <> Maybe<double> StringPtr::tryParseAs<double>() const { return _::tryParseDouble(*this); }
 template <> Maybe<float> StringPtr::tryParseAs<float>() const { return _::tryParseDouble(*this); }
-
-Maybe<size_t> StringPtr::find(const StringPtr& other) const {
-  if (other.size() == 0) {
-    return size_t(0);
-  }
-  if (size() == 0) {
-    return kj::none;
-  }
-  if (other.size() > size()) {
-    // We won't find the entirety of other if other is longer than this.
-    return kj::none;
-  }
-
-#if !defined(_WIN32)
-  void* found = memmem(begin(), size(), other.begin(), other.size());
-  if (found == nullptr) {
-    return kj::none;
-  } else {
-    return static_cast<char*>(found)-begin();
-  }
-#else
-  // TODO(perf) This is O(len(this)*len(other)), which is very slow on big strings.
-  //
-  // On platforms that don't support memem, we should implement the Two-Way String-Matching
-  // algorithm with linear performance.  The Two-Way String-Matching algorithm is described in
-  // Crochemore and Perrin's CACM paper (Crochemore M., Perrin D., 1991, Two-way
-  // string-matching, Journal of the ACM 38(3):651-675).
-  //
-  // * A scan of the original paper can be found at
-  //   https://monge.univ-mlv.fr/~mac/Articles-PDF/CP-1991-jacm.pdf.
-  //
-  // * I find Python's implementation notes much easier to understand than the original paoer.
-  //   https://github.com/python/cpython/blob/main/Objects/stringlib/stringlib_find_two_way_notes.txt
-  //
-  // * https://www-igm.univ-mlv.fr/~lecroq/string/node26.html#SECTION00260 has a description of
-  //   the algorithm with some C code.
-  for (size_t i = 0; i + other.size() <= size(); ++i) {
-    if (slice(i).startsWith(other)) {
-      return i;
-    }
-  }
-
-  return kj::none;
-#endif
-}
 
 }  // namespace kj

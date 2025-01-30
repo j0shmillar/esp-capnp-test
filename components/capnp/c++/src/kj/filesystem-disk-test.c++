@@ -72,8 +72,8 @@ static auto newTemp(Func&& create)
   static uint counter = 0;
   for (;;) {
     auto path = kj::str(tmpdir, "kj-filesystem-test.", GetCurrentProcessId(), ".", counter++);
-    KJ_IF_SOME(result, create(encodeWideString(path, true))) {
-      return kj::mv(result);
+    KJ_IF_MAYBE(result, create(encodeWideString(path, true))) {
+      return kj::mv(*result);
     }
   }
 }
@@ -217,9 +217,10 @@ bool isWine() { return false; }
 static Own<File> newTempFile() {
   const char* tmpDir = getenv("TEST_TMPDIR");
   auto filename = str(tmpDir != nullptr ? tmpDir : VAR_TMP, "/kj-filesystem-test.XXXXXX");
-  auto fd = KJ_SYSCALL_FD(mkstemp(filename.begin()));
+  int fd;
+  KJ_SYSCALL(fd = mkstemp(filename.begin()));
   KJ_DEFER(KJ_SYSCALL(unlink(filename.cStr())));
-  return newDiskFile(kj::mv(fd));
+  return newDiskFile(AutoCloseFd(fd));
 }
 
 class TempDir {
@@ -233,8 +234,9 @@ public:
   }
 
   Own<Directory> get() {
-    auto fd = KJ_SYSCALL_FD(open(filename.cStr(), O_RDONLY));
-    return newDiskDirectory(kj::mv(fd));
+    int fd;
+    KJ_SYSCALL(fd = open(filename.cStr(), O_RDONLY));
+    return newDiskDirectory(AutoCloseFd(fd));
   }
 
   ~TempDir() noexcept(false) {
@@ -329,25 +331,25 @@ KJ_TEST("DiskFile") {
     KJ_EXPECT(privateMapping.begin() != mapping.begin());
     KJ_EXPECT(writableMapping->get().begin() != privateMapping.begin());
 
-    KJ_EXPECT(kj::str(mapping.first(6).asChars()) == "foobaz");
-    KJ_EXPECT(kj::str(writableMapping->get().first(6).asChars()) == "foobaz");
-    KJ_EXPECT(kj::str(privateMapping.first(6).asChars()) == "foobaz");
+    KJ_EXPECT(kj::str(mapping.slice(0, 6).asChars()) == "foobaz");
+    KJ_EXPECT(kj::str(writableMapping->get().slice(0, 6).asChars()) == "foobaz");
+    KJ_EXPECT(kj::str(privateMapping.slice(0, 6).asChars()) == "foobaz");
 
     privateMapping[0] = 'F';
-    KJ_EXPECT(kj::str(mapping.first(6).asChars()) == "foobaz");
-    KJ_EXPECT(kj::str(writableMapping->get().first(6).asChars()) == "foobaz");
-    KJ_EXPECT(kj::str(privateMapping.first(6).asChars()) == "Foobaz");
+    KJ_EXPECT(kj::str(mapping.slice(0, 6).asChars()) == "foobaz");
+    KJ_EXPECT(kj::str(writableMapping->get().slice(0, 6).asChars()) == "foobaz");
+    KJ_EXPECT(kj::str(privateMapping.slice(0, 6).asChars()) == "Foobaz");
 
     writableMapping->get()[1] = 'D';
     writableMapping->changed(writableMapping->get().slice(1, 2));
-    KJ_EXPECT(kj::str(mapping.first(6).asChars()) == "fDobaz");
-    KJ_EXPECT(kj::str(writableMapping->get().first(6).asChars()) == "fDobaz");
-    KJ_EXPECT(kj::str(privateMapping.first(6).asChars()) == "Foobaz");
+    KJ_EXPECT(kj::str(mapping.slice(0, 6).asChars()) == "fDobaz");
+    KJ_EXPECT(kj::str(writableMapping->get().slice(0, 6).asChars()) == "fDobaz");
+    KJ_EXPECT(kj::str(privateMapping.slice(0, 6).asChars()) == "Foobaz");
 
     file->write(0, StringPtr("qux").asBytes());
-    KJ_EXPECT(kj::str(mapping.first(6).asChars()) == "quxbaz");
-    KJ_EXPECT(kj::str(writableMapping->get().first(6).asChars()) == "quxbaz");
-    KJ_EXPECT(kj::str(privateMapping.first(6).asChars()) == "Foobaz");
+    KJ_EXPECT(kj::str(mapping.slice(0, 6).asChars()) == "quxbaz");
+    KJ_EXPECT(kj::str(writableMapping->get().slice(0, 6).asChars()) == "quxbaz");
+    KJ_EXPECT(kj::str(privateMapping.slice(0, 6).asChars()) == "Foobaz");
 
     file->write(12, StringPtr("corge").asBytes());
     KJ_EXPECT(kj::str(mapping.slice(12, 17).asChars()) == "corge");
@@ -405,8 +407,8 @@ KJ_TEST("DiskDirectory") {
   KJ_EXPECT(dir->listNames() == nullptr);
   KJ_EXPECT(dir->listEntries() == nullptr);
   KJ_EXPECT(!dir->exists(Path("foo")));
-  KJ_EXPECT(dir->tryOpenFile(Path("foo")) == kj::none);
-  KJ_EXPECT(dir->tryOpenFile(Path("foo"), WriteMode::MODIFY) == kj::none);
+  KJ_EXPECT(dir->tryOpenFile(Path("foo")) == nullptr);
+  KJ_EXPECT(dir->tryOpenFile(Path("foo"), WriteMode::MODIFY) == nullptr);
 
   {
     auto file = dir->openFile(Path("foo"), WriteMode::CREATE);
@@ -436,8 +438,8 @@ KJ_TEST("DiskDirectory") {
 
   KJ_EXPECT(dir->openFile(Path("foo"))->readAllText() == "foobar");
 
-  KJ_EXPECT(dir->tryOpenFile(Path({"foo", "bar"}), WriteMode::MODIFY) == kj::none);
-  KJ_EXPECT(dir->tryOpenFile(Path({"bar", "baz"}), WriteMode::MODIFY) == kj::none);
+  KJ_EXPECT(dir->tryOpenFile(Path({"foo", "bar"}), WriteMode::MODIFY) == nullptr);
+  KJ_EXPECT(dir->tryOpenFile(Path({"bar", "baz"}), WriteMode::MODIFY) == nullptr);
   KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("parent is not a directory",
       dir->tryOpenFile(Path({"bar", "baz"}), WriteMode::CREATE));
 
@@ -515,8 +517,8 @@ KJ_TEST("DiskDirectory") {
 
   {
     auto appender = dir->appendFile(Path({"corge", "grault"}), WriteMode::MODIFY);
-    appender->write("waldo"_kjb);
-    appender->write("fred"_kjb);
+    appender->write("waldo", 5);
+    appender->write("fred", 4);
   }
 
   KJ_EXPECT(dir->openFile(Path({"corge", "grault"}))->readAllText() == "ragwaldofred");
@@ -562,9 +564,9 @@ KJ_TEST("DiskDirectory symlinks") {
   KJ_EXPECT(dir->readlink(Path("foo")) == "bar/qux/../baz");
 
   // Broken link into non-existing directory cannot be opened in any mode.
-  KJ_EXPECT(dir->tryOpenFile(Path("foo")) == kj::none);
-  KJ_EXPECT(dir->tryOpenFile(Path("foo"), WriteMode::CREATE) == kj::none);
-  KJ_EXPECT(dir->tryOpenFile(Path("foo"), WriteMode::MODIFY) == kj::none);
+  KJ_EXPECT(dir->tryOpenFile(Path("foo")) == nullptr);
+  KJ_EXPECT(dir->tryOpenFile(Path("foo"), WriteMode::CREATE) == nullptr);
+  KJ_EXPECT(dir->tryOpenFile(Path("foo"), WriteMode::MODIFY) == nullptr);
   KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("parent is not a directory",
       dir->tryOpenFile(Path("foo"), WriteMode::CREATE | WriteMode::MODIFY));
   KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("parent is not a directory",
@@ -576,9 +578,9 @@ KJ_TEST("DiskDirectory symlinks") {
   subdir->openSubdir(Path("qux"), WriteMode::CREATE);
 
   // Link still points to non-existing file so cannot be open in most modes.
-  KJ_EXPECT(dir->tryOpenFile(Path("foo")) == kj::none);
-  KJ_EXPECT(dir->tryOpenFile(Path("foo"), WriteMode::CREATE) == kj::none);
-  KJ_EXPECT(dir->tryOpenFile(Path("foo"), WriteMode::MODIFY) == kj::none);
+  KJ_EXPECT(dir->tryOpenFile(Path("foo")) == nullptr);
+  KJ_EXPECT(dir->tryOpenFile(Path("foo"), WriteMode::CREATE) == nullptr);
+  KJ_EXPECT(dir->tryOpenFile(Path("foo"), WriteMode::MODIFY) == nullptr);
 
   // But... CREATE | MODIFY works.
   dir->openFile(Path("foo"), WriteMode::CREATE | WriteMode::MODIFY)
@@ -594,11 +596,11 @@ KJ_TEST("DiskDirectory symlinks") {
   KJ_EXPECT(dir->readlink(Path("foo")) == "corge");
   KJ_EXPECT(!dir->exists(Path("foo")));
   KJ_EXPECT(dir->lstat(Path("foo")).type == FsNode::Type::SYMLINK);
-  KJ_EXPECT(dir->tryOpenFile(Path("foo")) == kj::none);
+  KJ_EXPECT(dir->tryOpenFile(Path("foo")) == nullptr);
 
   dir->remove(Path("foo"));
   KJ_EXPECT(!dir->exists(Path("foo")));
-  KJ_EXPECT(dir->tryOpenFile(Path("foo")) == kj::none);
+  KJ_EXPECT(dir->tryOpenFile(Path("foo")) == nullptr);
 }
 #endif
 
@@ -901,7 +903,7 @@ KJ_TEST("DiskFile holes") {
 #endif
   KJ_EXPECT(meta.spaceUsed <= 2 * 65536);
 
-  byte buf[7]{};
+  byte buf[7];
 
 #if !_WIN32  // Win32 CopyFile() does NOT preserve sparseness.
   {

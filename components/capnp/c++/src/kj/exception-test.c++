@@ -47,22 +47,27 @@ TEST(Exception, RunCatchingExceptions) {
     recovered = true;
   });
 
+#if KJ_NO_EXCEPTIONS
+  EXPECT_TRUE(recovered);
+#else
   EXPECT_FALSE(recovered);
+#endif
 
-  KJ_IF_SOME(ex, e) {
-    EXPECT_EQ("foo", ex.getDescription());
+  KJ_IF_MAYBE(ex, e) {
+    EXPECT_EQ("foo", ex->getDescription());
   } else {
     ADD_FAILURE() << "Expected exception";
   }
 }
 
+#if !KJ_NO_EXCEPTIONS
 TEST(Exception, RunCatchingExceptionsStdException) {
   Maybe<Exception> e = kj::runCatchingExceptions([&]() {
     throw std::logic_error("foo");
   });
 
-  KJ_IF_SOME(ex, e) {
-    EXPECT_EQ("std::exception: foo", ex.getDescription());
+  KJ_IF_MAYBE(ex, e) {
+    EXPECT_EQ("std::exception: foo", ex->getDescription());
   } else {
     ADD_FAILURE() << "Expected exception";
   }
@@ -73,16 +78,22 @@ TEST(Exception, RunCatchingExceptionsOtherException) {
     throw 123;
   });
 
-  KJ_IF_SOME(ex, e) {
+  KJ_IF_MAYBE(ex, e) {
 #if __GNUC__ && !KJ_NO_RTTI
-    EXPECT_EQ("unknown non-KJ exception of type: int", ex.getDescription());
+    EXPECT_EQ("unknown non-KJ exception of type: int", ex->getDescription());
 #else
-    EXPECT_EQ("unknown non-KJ exception", ex.getDescription());
+    EXPECT_EQ("unknown non-KJ exception", ex->getDescription());
 #endif
   } else {
     ADD_FAILURE() << "Expected exception";
   }
 }
+#endif
+
+#if !KJ_NO_EXCEPTIONS
+// We skip this test when exceptions are disabled because making it no-exceptions-safe defeats
+// the purpose of the test: recoverable exceptions won't throw inside a destructor in the first
+// place.
 
 class ThrowingDestructor: public UnwindDetector {
 public:
@@ -99,8 +110,8 @@ TEST(Exception, UnwindDetector) {
     ThrowingDestructor t;
   });
 
-  KJ_IF_SOME(ex, e) {
-    EXPECT_EQ("this is a test, not a real bug", ex.getDescription());
+  KJ_IF_MAYBE(ex, e) {
+    EXPECT_EQ("this is a test, not a real bug", ex->getDescription());
   } else {
     ADD_FAILURE() << "Expected exception";
   }
@@ -113,12 +124,13 @@ TEST(Exception, UnwindDetector) {
     }
   });
 
-  KJ_IF_SOME(ex, e) {
-    EXPECT_EQ("baz", ex.getDescription());
+  KJ_IF_MAYBE(ex, e) {
+    EXPECT_EQ("baz", ex->getDescription());
   } else {
     ADD_FAILURE() << "Expected exception";
   }
 }
+#endif
 
 #if defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION) || \
     KJ_HAS_COMPILER_FEATURE(address_sanitizer) || \
@@ -132,6 +144,7 @@ TEST(Exception, ExceptionCallbackMustBeOnStack) {
 #endif
 #endif  // !__MINGW32__
 
+#if !KJ_NO_EXCEPTIONS
 TEST(Exception, ScopeSuccessFail) {
   bool success = false;
   bool failure = false;
@@ -163,6 +176,7 @@ TEST(Exception, ScopeSuccessFail) {
   EXPECT_FALSE(success);
   EXPECT_TRUE(failure);
 }
+#endif
 
 #if __GNUG__ || defined(__clang__)
 kj::String testStackTrace() __attribute__((noinline));
@@ -197,9 +211,10 @@ KJ_TEST("getStackTrace() returns correct line number, not line + 1") {
   auto trace = testStackTrace();
   auto wrong = kj::str("exception-test.c++:", __LINE__);
 
-  KJ_ASSERT(!trace.contains(wrong), trace, wrong);
+  KJ_ASSERT(strstr(trace.cStr(), wrong.cStr()) == nullptr, trace, wrong);
 }
 
+#if !KJ_NO_EXCEPTIONS
 KJ_TEST("InFlightExceptionIterator works") {
   bool caught = false;
   try {
@@ -208,19 +223,19 @@ KJ_TEST("InFlightExceptionIterator works") {
         KJ_FAIL_ASSERT("bar");
       } catch (const kj::Exception& e) {
         InFlightExceptionIterator iter;
-        KJ_IF_SOME(e2, iter.next()) {
-          KJ_EXPECT(&e2 == &e, e2.getDescription());
+        KJ_IF_MAYBE(e2, iter.next()) {
+          KJ_EXPECT(e2 == &e, e2->getDescription());
         } else {
           KJ_FAIL_EXPECT("missing first exception");
         }
 
-        KJ_IF_SOME(e2, iter.next()) {
-          KJ_EXPECT(e2.getDescription() == "foo", e2.getDescription());
+        KJ_IF_MAYBE(e2, iter.next()) {
+          KJ_EXPECT(e2->getDescription() == "foo", e2->getDescription());
         } else {
           KJ_FAIL_EXPECT("missing second exception");
         }
 
-        KJ_EXPECT(iter.next() == kj::none, "more than two exceptions");
+        KJ_EXPECT(iter.next() == nullptr, "more than two exceptions");
 
         caught = true;
       }
@@ -232,6 +247,7 @@ KJ_TEST("InFlightExceptionIterator works") {
 
   KJ_EXPECT(caught);
 }
+#endif
 
 KJ_TEST("computeRelativeTrace") {
   auto testCase = [](uint expectedPrefix,
@@ -276,26 +292,6 @@ KJ_TEST("computeRelativeTrace") {
   testCase(5,
       {1, 2, 3, 4, 5, 6, 7, 8},
       {8, 7, 6, 5, 6, 7, 8, 7, 8});
-}
-
-KJ_TEST("exception details") {
-  kj::Exception e = KJ_EXCEPTION(FAILED, "foo");
-
-  e.setDetail(123, kj::heapArray("foo"_kjb));
-  e.setDetail(456, kj::heapArray("bar"_kjb));
-
-  KJ_EXPECT(kj::str(KJ_ASSERT_NONNULL(e.getDetail(123)).asChars()) == "foo");
-  KJ_EXPECT(kj::str(KJ_ASSERT_NONNULL(e.getDetail(456)).asChars()) == "bar");
-  KJ_EXPECT(e.getDetail(789) == kj::none);
-
-  kj::Exception e2 = kj::cp(e);
-  KJ_EXPECT(kj::str(KJ_ASSERT_NONNULL(e2.getDetail(123)).asChars()) == "foo");
-  KJ_EXPECT(kj::str(KJ_ASSERT_NONNULL(e2.getDetail(456)).asChars()) == "bar");
-  KJ_EXPECT(e2.getDetail(789) == kj::none);
-
-  KJ_EXPECT(kj::str(KJ_ASSERT_NONNULL(e2.releaseDetail(123)).asChars()) == "foo");
-  KJ_EXPECT(e2.getDetail(123) == kj::none);
-  KJ_EXPECT(kj::str(KJ_ASSERT_NONNULL(e2.getDetail(456)).asChars()) == "bar");
 }
 
 }  // namespace

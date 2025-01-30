@@ -1,4 +1,4 @@
-load(":configure.bzl", "kj_configure")
+load("//:build/configure.bzl", "kj_configure")
 
 kj_configure()
 
@@ -13,7 +13,8 @@ cc_library(
         "encoding.c++",
         "exception.c++",
         "filesystem.c++",
-        "glob-filter.c++",
+        "filesystem-disk-unix.c++",
+        "filesystem-disk-win32.c++",
         "hash.c++",
         "io.c++",
         "list.c++",
@@ -26,13 +27,11 @@ cc_library(
         "string.c++",
         "string-tree.c++",
         "table.c++",
+        "test-helpers.c++",
         "thread.c++",
         "time.c++",
         "units.c++",
-    ] + select({
-        "@platforms//os:windows": ["filesystem-disk-win32.c++"],
-        "//conditions:default": ["filesystem-disk-unix.c++"],
-    }),
+    ],
     hdrs = [
         "arena.h",
         "array.h",
@@ -43,7 +42,6 @@ cc_library(
         "exception.h",
         "filesystem.h",
         "function.h",
-        "glob-filter.h",
         "hash.h",
         "io.h",
         "list.h",
@@ -63,6 +61,7 @@ cc_library(
         "table.h",
         "test.h",
         "thread.h",
+        "threadlocal.h",
         "time.h",
         "tuple.h",
         "units.h",
@@ -71,10 +70,6 @@ cc_library(
         "windows-sanity.h",
     ],
     include_prefix = "kj",
-    # TODO(cleanup): Starting with glibc 2.34 (Debian Bookworm, Ubuntu 22.04), pthread and libdl
-    # are being compiled into the glibc archive itself and no longer need to be included. Drop
-    # these once we no longer need to support older platforms, -lpthread is duplicated many times in
-    # downstream project targets and bazel is unable to deduplicate it itself.
     linkopts = select({
         "@platforms//os:windows": [],
         ":use_libdl": [
@@ -92,17 +87,12 @@ cc_library(
     srcs = [
         "async.c++",
         "async-io.c++",
+        "async-io-unix.c++",
+        "async-io-win32.c++",
+        "async-unix.c++",
+        "async-win32.c++",
         "timer.c++",
-    ] + select({
-        "@platforms//os:windows": [
-            "async-io-win32.c++",
-            "async-win32.c++",
-        ],
-        "//conditions:default": [
-            "async-io-unix.c++",
-            "async-unix.c++",
-        ],
-    }),
+    ],
     hdrs = [
         "async.h",
         "async-inl.h",
@@ -110,14 +100,11 @@ cc_library(
         "async-io-internal.h",
         "async-prelude.h",
         "async-queue.h",
+        "async-unix.h",
+        "async-win32.h",
         "timer.h",
-    ] + select({
-        "@platforms//os:windows": ["async-win32.h"],
-        "//conditions:default": ["async-unix.h"],
-    }),
+    ],
     include_prefix = "kj",
-    # Disable header parsing based on async-inl.h
-    features = ["-parse_headers"],
     linkopts = select({
         "@platforms//os:windows": [
             "Ws2_32.lib",
@@ -133,10 +120,6 @@ cc_library(
     name = "kj-test",
     srcs = [
         "test.c++",
-        "test-helpers.c++",
-    ],
-    hdrs = [
-        "test.h",
     ],
     include_prefix = "kj",
     visibility = ["//visibility:public"],
@@ -181,7 +164,7 @@ cc_library(
     "string-tree-test.c++",
     "table-test.c++",
     "test-test.c++",
-    "glob-filter-test.c++",
+    "threadlocal-test.c++",
     "thread-test.c++",
     "time-test.c++",
     "tuple-test.c++",
@@ -191,6 +174,10 @@ cc_library(
 cc_test(
     name = "async-coroutine-test",
     srcs = ["async-coroutine-test.c++"],
+    target_compatible_with = select({
+        ":use_coroutines": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
     deps = [
         ":kj-test",
         "//src/kj/compat:kj-http",
@@ -208,24 +195,24 @@ cc_library(
 cc_test(
     name = "filesystem-disk-generic-test",
     srcs = ["filesystem-disk-generic-test.c++"],
-    target_compatible_with = [
-        "@platforms//os:linux",
-    ],
     deps = [
         ":filesystem-disk-test-base",
         ":kj-test",
+    ],
+    target_compatible_with = [
+        "@platforms//os:linux",
     ],
 )
 
 cc_test(
     name = "filesystem-disk-old-kernel-test",
     srcs = ["filesystem-disk-old-kernel-test.c++"],
-    target_compatible_with = [
-        "@platforms//os:linux",
-    ],
     deps = [
         ":filesystem-disk-test-base",
         ":kj-test",
+    ],
+    target_compatible_with = [
+        "@platforms//os:linux",
     ],
 )
 
@@ -263,14 +250,12 @@ cc_test(
 cc_test(
     name = "exception-override-symbolizer-test",
     srcs = ["exception-override-symbolizer-test.c++"],
-    linkstatic = True,
-    target_compatible_with = select({
-        "@platforms//os:linux": [],
-        "@platforms//os:macos": [],
-        "//conditions:default": ["@platforms//:incompatible"],
-    }),
     deps = [
         ":kj",
         ":kj-test",
+    ],
+    linkstatic = True,
+    target_compatible_with = [
+        "@platforms//os:linux",
     ],
 )

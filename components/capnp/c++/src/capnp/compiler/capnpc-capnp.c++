@@ -35,6 +35,7 @@
 #include "../schema-loader.h"
 #include "../dynamic.h"
 #include <kj/miniposix.h>
+#include <unordered_map>
 #include <kj/main.h>
 #include <algorithm>
 #include <map>
@@ -72,6 +73,7 @@ struct Indent {
     inline Iterator& operator++() { ++i; return *this; }
     inline Iterator operator++(int) { Iterator result = *this; ++i; return result; }
     inline bool operator==(const Iterator& other) const { return i == other.i; }
+    inline bool operator!=(const Iterator& other) const { return i != other.i; }
   };
 
   inline size_t size() const { return amount; }
@@ -382,10 +384,10 @@ private:
     auto value = genValue(schemaLoader.getType(annDecl.getType(), decl),
                           annotation.getValue()).flatten();
     if (value.startsWith("(")) {
-      return kj::strTree(prefix, "$", nodeName(decl, scope, annotation.getBrand(), kj::none),
+      return kj::strTree(prefix, "$", nodeName(decl, scope, annotation.getBrand(), nullptr),
                          value, suffix);
     } else {
-      return kj::strTree(prefix, "$", nodeName(decl, scope, annotation.getBrand(), kj::none),
+      return kj::strTree(prefix, "$", nodeName(decl, scope, annotation.getBrand(), nullptr),
                          "(", value, ")", suffix);
     }
   }
@@ -464,7 +466,7 @@ private:
         int size = typeSizeBits(slot.getType());
         return kj::strTree(
             indent, proto.getName(), " @", proto.getOrdinal().getExplicit(),
-            " :", genType(slot.getType(), scope, kj::none),
+            " :", genType(slot.getType(), scope, nullptr),
             isEmptyValue(slot.getDefaultValue()) ? kj::strTree("") :
                 kj::strTree(" = ", genValue(field.getType(), slot.getDefaultValue())),
             genAnnotations(proto.getAnnotations(), scope),
@@ -502,7 +504,7 @@ private:
             auto slot = proto.getSlot();
 
             return kj::strTree(
-                proto.getName(), " :", genType(slot.getType(), interface, kj::none),
+                proto.getName(), " :", genType(slot.getType(), interface, nullptr),
                 isEmptyValue(slot.getDefaultValue()) ? kj::strTree("") :
                     kj::strTree(" = ", genValue(field.getType(), slot.getDefaultValue())),
                 genAnnotations(proto.getAnnotations(), interface));
@@ -520,7 +522,7 @@ private:
       return kj::strTree(" superclasses(", kj::StringTree(
           KJ_MAP(superclass, superclasses) {
             return nodeName(schemaLoader.get(superclass.getId()), interface,
-                            superclass.getBrand(), kj::none);
+                            superclass.getBrand(), nullptr);
           }, ", "), ")");
     }
   }
@@ -599,7 +601,7 @@ private:
         auto constProto = proto.getConst();
         return kj::strTree(
             indent, "const ", name, " @0x", kj::hex(proto.getId()), " :",
-            genType(constProto.getType(), schema, kj::none), " = ",
+            genType(constProto.getType(), schema, nullptr), " = ",
             genValue(schema.asConst().getType(), constProto.getValue()),
             genAnnotations(schema), ";\n");
       }
@@ -631,7 +633,7 @@ private:
         return kj::strTree(
             indent, "annotation ", name, " @0x", kj::hex(proto.getId()),
             " (", strArray(targets, ", "), ") :",
-            genType(annotationProto.getType(), schema, kj::none), genAnnotations(schema), ";\n");
+            genType(annotationProto.getType(), schema, nullptr), genAnnotations(schema), ";\n");
       }
     }
 
@@ -672,7 +674,7 @@ private:
     for (auto requestedFile: request.getRequestedFiles()) {
       genFile(schemaLoader.get(requestedFile.getId())).visit(
           [&](kj::ArrayPtr<const char> text) {
-            out.write(text.asBytes());
+            out.write(text.begin(), text.size());
           });
     }
 

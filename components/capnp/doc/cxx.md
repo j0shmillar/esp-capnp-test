@@ -457,7 +457,7 @@ in data from disk as you read it.
 
 `mmap()` works best when reading from flash media, or when the file is already hot in cache.
 It works less well with slow rotating disks.  Here, disk seeks make random access relatively
-expensive.  Also, if I/O throughput is your bottleneck, then the fact that mmapped data cannot
+expensive.  Also, if I/O throughput is your bottleneck, then the fact that mmaped data cannot
 be packed or compressed may hurt you.  However, it all depends on what fraction of the file you're
 actually reading -- if you only pull one field out of one deeply-nested struct in a huge tree, it
 may still be a win.  The only way to know for sure is to do benchmarks!  (But be careful to make
@@ -584,9 +584,9 @@ void dynamicPrintValue(DynamicValue::Reader value) {
     }
     case DynamicValue::ENUM: {
       auto enumValue = value.as<DynamicEnum>();
-      KJ_IF_SOME(enumerant, enumValue.getEnumerant()) {
+      KJ_IF_MAYBE(enumerant, enumValue.getEnumerant()) {
         std::cout <<
-            enumerant.getProto().getName().cStr();
+            enumerant->getProto().getName().cStr();
       } else {
         // Unknown enum value; output raw number.
         std::cout << enumValue.getRaw();

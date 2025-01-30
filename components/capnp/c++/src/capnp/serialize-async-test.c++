@@ -63,12 +63,13 @@ class FragmentingOutputStream: public kj::OutputStream {
 public:
   FragmentingOutputStream(kj::OutputStream& inner): inner(inner) {}
 
-  void write(kj::ArrayPtr<const byte> buffer) override {
-    while (buffer != nullptr) {
+  void write(const void* buffer, size_t size) override {
+    while (size > 0) {
       delay();
-      size_t n = rand() % buffer.size() + 1;
-      inner.write(buffer.first(n));
-      buffer = buffer.slice(n);
+      size_t n = rand() % size + 1;
+      inner.write(buffer, n);
+      buffer = reinterpret_cast<const byte*>(buffer) + n;
+      size -= n;
     }
   }
 
@@ -175,11 +176,13 @@ class SocketOutputStream: public kj::OutputStream {
 public:
   explicit SocketOutputStream(SOCKET fd): fd(fd) {}
 
-  void write(kj::ArrayPtr<const byte> data) override {
-    while (data != nullptr) {
+  void write(const void* buffer, size_t size) override {
+    const char* ptr = reinterpret_cast<const char*>(buffer);
+    while (size > 0) {
       kj::miniposix::ssize_t n;
-      KJ_SOCKCALL(n = send(fd, data.asChars().begin(), data.size(), 0));
-      data = data.slice(n);
+      KJ_SOCKCALL(n = send(fd, ptr, size, 0));
+      size -= n;
+      ptr += n;
     }
   }
 
@@ -191,13 +194,15 @@ class SocketInputStream: public kj::InputStream {
 public:
   explicit SocketInputStream(SOCKET fd): fd(fd) {}
 
-  size_t tryRead(kj::ArrayPtr<byte> buffer, size_t minBytes) override {
+  size_t tryRead(void* buffer, size_t minBytes, size_t maxBytes) override {
+    char* ptr = reinterpret_cast<char*>(buffer);
     size_t total = 0;
     while (total < minBytes) {
       kj::miniposix::ssize_t n;
-      KJ_SOCKCALL(n = recv(fd, buffer.asChars().begin(), buffer.size(), 0));
+      KJ_SOCKCALL(n = recv(fd, ptr, maxBytes, 0));
       total += n;
-      buffer = buffer.slice(n);
+      maxBytes -= n;
+      ptr += n;
     }
     return total;
   }
@@ -422,7 +427,7 @@ KJ_TEST("BufferedMessageStream basics") {
   kj::WaitScope waitScope(loop);
 
   auto pipe = kj::newTwoWayPipe();
-  auto writePromise = pipe.ends[1]->write(data.getArray());
+  auto writePromise = pipe.ends[1]->write(data.getArray().begin(), data.getArray().size());
 
   uint callbackCallCount = 0;
   auto callback = [&](MessageReader& reader) {
@@ -455,7 +460,7 @@ KJ_TEST("BufferedMessageStream basics") {
   KJ_EXPECT(!eofPromise.poll(waitScope));
 
   pipe.ends[1]->shutdownWrite();
-  KJ_EXPECT(eofPromise.wait(waitScope) == kj::none);
+  KJ_EXPECT(eofPromise.wait(waitScope) == nullptr);
 }
 
 KJ_TEST("BufferedMessageStream fragmented reads") {
@@ -480,30 +485,30 @@ KJ_TEST("BufferedMessageStream fragmented reads") {
   auto remainingData = data.getArray();
 
   // Write 5 bytes. This won't even fulfill the first read's minBytes.
-  pipe.ends[1]->write(remainingData.first(5)).wait(waitScope);
-  remainingData = remainingData.slice(5);
+  pipe.ends[1]->write(remainingData.begin(), 5).wait(waitScope);
+  remainingData = remainingData.slice(5, remainingData.size());
   KJ_EXPECT(!readPromise.poll(waitScope));
 
   // Write 4 more. Now the MessageStream will only see the first word which contains the first
   // segment size. This size is small so the MessageStream won't yet fall back to
   // readEntireMessage().
-  pipe.ends[1]->write(remainingData.first(4)).wait(waitScope);
-  remainingData = remainingData.slice(4);
+  pipe.ends[1]->write(remainingData.begin(), 4).wait(waitScope);
+  remainingData = remainingData.slice(4, remainingData.size());
   KJ_EXPECT(!readPromise.poll(waitScope));
 
   // Drip 10 more bytes. Now the MessageStream will realize that it needs to try
   // readEntireMessage().
-  pipe.ends[1]->write(remainingData.first(10)).wait(waitScope);
-  remainingData = remainingData.slice(10);
+  pipe.ends[1]->write(remainingData.begin(), 10).wait(waitScope);
+  remainingData = remainingData.slice(10, remainingData.size());
   KJ_EXPECT(!readPromise.poll(waitScope));
 
   // Give it all except the last byte.
-  pipe.ends[1]->write(remainingData.first(remainingData.size() - 1)).wait(waitScope);
-  remainingData = remainingData.slice(remainingData.size() - 1);
+  pipe.ends[1]->write(remainingData.begin(), remainingData.size() - 1).wait(waitScope);
+  remainingData = remainingData.slice(remainingData.size() - 1, remainingData.size());
   KJ_EXPECT(!readPromise.poll(waitScope));
 
   // Finish it off.
-  pipe.ends[1]->write(remainingData.first(1)).wait(waitScope);
+  pipe.ends[1]->write(remainingData.begin(), 1).wait(waitScope);
   KJ_ASSERT(readPromise.poll(waitScope));
 
   auto msg = readPromise.wait(waitScope);
@@ -525,10 +530,10 @@ KJ_TEST("BufferedMessageStream many small messages") {
   kj::WaitScope waitScope(loop);
 
   auto pipe = kj::newTwoWayPipe();
-  auto writePromise = pipe.ends[1]->write(data.getArray())
+  auto writePromise = pipe.ends[1]->write(data.getArray().begin(), data.getArray().size())
       .then([&]() {
     // Write some garbage at the end.
-    return pipe.ends[1]->write("bogus"_kjb);
+    return pipe.ends[1]->write("bogus", 5);
   }).then([&]() {
     // EOF.
     return pipe.ends[1]->shutdownWrite();

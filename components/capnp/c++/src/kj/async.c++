@@ -42,17 +42,13 @@
 #include "async.h"
 #include "debug.h"
 #include "vector.h"
+#include "threadlocal.h"
 #include "mutex.h"
 #include "one-of.h"
 #include "function.h"
 #include "list.h"
-#include "map.h"
 #include <deque>
 #include <atomic>
-
-#if __linux__
-#include <sys/prctl.h>
-#endif
 
 #if _WIN32 || __CYGWIN__
 #include <windows.h>  // for Sleep(0) and fibers
@@ -120,7 +116,7 @@ namespace kj {
 
 namespace {
 
-thread_local DisallowAsyncDestructorsScope* disallowAsyncDestructorsScope = nullptr;
+KJ_THREADLOCAL_PTR(DisallowAsyncDestructorsScope) disallowAsyncDestructorsScope = nullptr;
 
 }  // namespace
 
@@ -165,7 +161,7 @@ AllowAsyncDestructorsScope::~AllowAsyncDestructorsScope() {
 
 namespace {
 
-thread_local EventLoop* threadLocalEventLoop = nullptr;
+KJ_THREADLOCAL_PTR(EventLoop) threadLocalEventLoop = nullptr;
 
 #define _kJ_ALREADY_READY reinterpret_cast< ::kj::_::Event*>(1)
 
@@ -184,7 +180,7 @@ public:
 
   Maybe<Own<_::Event>> fire() override {
     fired = true;
-    return kj::none;
+    return nullptr;
   }
 
   void traceEvent(_::TraceBuilder& builder) override {
@@ -195,6 +191,10 @@ public:
 private:
   _::PromiseNode* node;
   void* traceAddr;
+};
+
+struct DummyFunctor {
+  void operator()() {};
 };
 
 }  // namespace
@@ -222,9 +222,9 @@ void Canceler::cancel(StringPtr cancelReason) {
 
 void Canceler::cancel(const Exception& exception) {
   for (;;) {
-    KJ_IF_SOME(a, list) {
-      a.unlink();
-      a.cancel(kj::cp(exception));
+    KJ_IF_MAYBE(a, list) {
+      a->unlink();
+      a->cancel(kj::cp(exception));
     } else {
       break;
     }
@@ -233,8 +233,8 @@ void Canceler::cancel(const Exception& exception) {
 
 void Canceler::release() {
   for (;;) {
-    KJ_IF_SOME(a, list) {
-      a.unlink();
+    KJ_IF_MAYBE(a, list) {
+      a->unlink();
     } else {
       break;
     }
@@ -245,8 +245,8 @@ Canceler::AdapterBase::AdapterBase(Canceler& canceler)
     : prev(canceler.list),
       next(canceler.list) {
   canceler.list = *this;
-  KJ_IF_SOME(n, next) {
-    n.prev = next;
+  KJ_IF_MAYBE(n, next) {
+    n->prev = next;
   }
 }
 
@@ -255,14 +255,14 @@ Canceler::AdapterBase::~AdapterBase() noexcept(false) {
 }
 
 void Canceler::AdapterBase::unlink() {
-  KJ_IF_SOME(p, prev) {
-    p = next;
+  KJ_IF_MAYBE(p, prev) {
+    *p = next;
   }
-  KJ_IF_SOME(n, next) {
-    n.prev = prev;
+  KJ_IF_MAYBE(n, next) {
+    n->prev = prev;
   }
-  next = kj::none;
-  prev = kj::none;
+  next = nullptr;
+  prev = nullptr;
 }
 
 Canceler::AdapterImpl<void>::AdapterImpl(kj::PromiseFulfiller<void>& fulfiller,
@@ -295,11 +295,11 @@ public:
   void destroy() override { freePromise(this); }
 
   OwnTask pop() {
-    KJ_IF_SOME(n, next) { n->prev = prev; }
+    KJ_IF_MAYBE(n, next) { n->get()->prev = prev; }
     OwnTask self = kj::mv(KJ_ASSERT_NONNULL(*prev));
     KJ_ASSERT(self.get() == this);
     *prev = kj::mv(next);
-    next = kj::none;
+    next = nullptr;
     prev = nullptr;
     return self;
   }
@@ -308,7 +308,7 @@ public:
   Maybe<OwnTask>* prev = nullptr;
 
   kj::String trace() {
-    void* space[32]{};
+    void* space[32];
     _::TraceBuilder builder(space);
     node->tracePromise(builder, false);
     return kj::str("task: ", builder);
@@ -321,10 +321,10 @@ protected:
     node->get(result);
 
     // Delete the node, catching any exceptions.
-    KJ_IF_SOME(exception, kj::runCatchingExceptions([this]() {
+    KJ_IF_MAYBE(exception, kj::runCatchingExceptions([this]() {
       node = nullptr;
     })) {
-      result.addException(kj::mv(exception));
+      result.addException(kj::mv(*exception));
     }
 
     // Remove from the task list. Do this before calling taskFailed(), so that taskFailed() can
@@ -333,16 +333,16 @@ protected:
 
     // We'll also process onEmpty() now, just in case `taskFailed()` actually destroys the whole
     // `TaskSet`.
-    KJ_IF_SOME(f, taskSet.emptyFulfiller) {
-      if (taskSet.tasks == kj::none) {
-        f->fulfill();
-        taskSet.emptyFulfiller = kj::none;
+    KJ_IF_MAYBE(f, taskSet.emptyFulfiller) {
+      if (taskSet.tasks == nullptr) {
+        f->get()->fulfill();
+        taskSet.emptyFulfiller = nullptr;
       }
     }
 
     // Call the error handler if there was an exception.
-    KJ_IF_SOME(e, result.exception) {
-      taskSet.errorHandler.taskFailed(kj::mv(e));
+    KJ_IF_MAYBE(e, result.exception) {
+      taskSet.errorHandler.taskFailed(kj::mv(*e));
     }
 
     return Own<Event>(mv(self));
@@ -360,13 +360,19 @@ private:
 };
 
 TaskSet::~TaskSet() noexcept(false) {
-  destroyTasks();
+  // You could argue it is dubious, but some applications would like for the destructor of a
+  // task to be able to schedule new tasks. So when we cancel our tasks... we might find new
+  // tasks added! We'll have to repeatedly cancel. Additionally, we need to make sure that we destroy
+  // the items in a loop to prevent any issues with stack overflow.
+  while (tasks != nullptr) {
+    auto removed = KJ_REQUIRE_NONNULL(tasks)->pop();
+  }
 }
 
 void TaskSet::add(Promise<void>&& promise) {
-  auto task = _::PromiseDisposer::appendPromise<Task>(_::PromiseNode::from(kj::mv(promise)), *this);
-  KJ_IF_SOME(head, tasks) {
-    head->prev = &task->next;
+  auto task = _::appendPromise<Task>(_::PromiseNode::from(kj::mv(promise)), *this);
+  KJ_IF_MAYBE(head, tasks) {
+    head->get()->prev = &task->next;
     task->next = kj::mv(tasks);
   }
   task->prev = &tasks;
@@ -378,9 +384,9 @@ kj::String TaskSet::trace() {
 
   Maybe<OwnTask>* ptr = &tasks;
   for (;;) {
-    KJ_IF_SOME(task, *ptr) {
-      traces.add(task->trace());
-      ptr = &task->next;
+    KJ_IF_MAYBE(task, *ptr) {
+      traces.add(task->get()->trace());
+      ptr = &task->get()->next;
     } else {
       break;
     }
@@ -390,13 +396,13 @@ kj::String TaskSet::trace() {
 }
 
 Promise<void> TaskSet::onEmpty() {
-  KJ_IF_SOME(fulfiller, emptyFulfiller) {
-    if (fulfiller->isWaiting()) {
+  KJ_IF_MAYBE(fulfiller, emptyFulfiller) {
+    if (fulfiller->get()->isWaiting()) {
       KJ_FAIL_REQUIRE("onEmpty() can only be called once at a time");
     }
   }
 
-  if (tasks == kj::none) {
+  if (tasks == nullptr) {
     return READY_NOW;
   } else {
     auto paf = newPromiseAndFulfiller<void>();
@@ -406,30 +412,10 @@ Promise<void> TaskSet::onEmpty() {
 }
 
 void TaskSet::clear() {
-  destroyTasks();
+  tasks = nullptr;
 
-  KJ_IF_SOME(fulfiller, emptyFulfiller) {
-    fulfiller->fulfill();
-  }
-}
-
-void TaskSet::destroyTasks() {
-  // You could argue it is dubious, but some applications would like for the destructor of a
-  // task to be able to schedule new tasks. So when we cancel our tasks... we might find new
-  // tasks added! We'll have to repeatedly cancel. Additionally, we need to make sure that we destroy
-  // the items in a loop to prevent any issues with stack overflow.
-
-  KJ_DEFER({
-    // If an exception occurs, ensure the remaining tasks still get unlinked.  Here, we assume it
-    // is not necessary to catch further exceptions, since we require destructors to guard against
-    // exceptions when unwinding.
-    while (tasks != kj::none) {
-      auto removed = KJ_REQUIRE_NONNULL(tasks)->pop();
-    }
-  });
-
-  while (tasks != kj::none) {
-    auto removed = KJ_REQUIRE_NONNULL(tasks)->pop();
+  KJ_IF_MAYBE(fulfiller, emptyFulfiller) {
+    fulfiller->get()->fulfill();
   }
 }
 
@@ -484,8 +470,8 @@ public:
     main = {};
   }
 
-  KJ_NOINLINE void switchToFiber();
-  KJ_NOINLINE void switchToMain();
+  void switchToFiber();
+  void switchToMain();
 
   void trace(TraceBuilder& builder) {
     // TODO(someday): Trace through fiber stack? Can it be done???
@@ -511,7 +497,6 @@ private:
 #endif
 
   [[noreturn]] void run();
-  KJ_NOINLINE void runOne();
 
   bool isReset() { return main == nullptr; }
 };
@@ -591,8 +576,8 @@ public:
     // a weird state.
 
 #if USE_CORE_LOCAL_FREELISTS
-    KJ_IF_SOME(core, lookupCoreLocalFreelist()) {
-      for (auto& stackPtr: core.stacks) {
+    KJ_IF_MAYBE(core, lookupCoreLocalFreelist()) {
+      for (auto& stackPtr: core->stacks) {
         _::FiberStack* result = __atomic_exchange_n(&stackPtr, nullptr, __ATOMIC_ACQUIRE);
         if (result != nullptr) {
           // Found a stack in this slot!
@@ -639,7 +624,7 @@ private:
 
   kj::Maybe<CoreLocalFreelist&> lookupCoreLocalFreelist() const {
     if (coreLocalFreelists == nullptr) {
-      return kj::none;
+      return nullptr;
     } else {
       int cpu = sched_getcpu();
       if (cpu >= 0) {
@@ -652,13 +637,13 @@ private:
           KJ_LOG(ERROR, "invalid cpu number from sched_getcpu()?", cpu, nproc);
           logged = true;
         }
-        return kj::none;
+        return nullptr;
       }
     }
   }
 #endif
 
-  void disposeImpl(void* pointer) const override {
+  void disposeImpl(void* pointer) const {
     _::FiberStack* stack = reinterpret_cast<_::FiberStack*>(pointer);
     KJ_DEFER(delete stack);
 
@@ -666,8 +651,8 @@ private:
     // where we don't want to reuse it.
     if (stack->isReset()) {
 #if USE_CORE_LOCAL_FREELISTS
-      KJ_IF_SOME(core, lookupCoreLocalFreelist()) {
-        for (auto& stackPtr: core.stacks) {
+      KJ_IF_MAYBE(core, lookupCoreLocalFreelist()) {
+        for (auto& stackPtr: core->stacks) {
           stack = __atomic_exchange_n(&stackPtr, stack, __ATOMIC_RELEASE);
           if (stack == nullptr) {
             // Cool, we inserted the stack into an unused slot. We're done.
@@ -710,7 +695,7 @@ void FiberPool::useCoreLocalFreelists() {
 void FiberPool::runSynchronously(kj::FunctionParam<void()> func) const {
   ensureThreadCanRunFibers();
 
-  _::FiberStack::SynchronousFunc syncFunc { func, kj::none };
+  _::FiberStack::SynchronousFunc syncFunc { func, nullptr };
 
   {
     auto stack = impl->takeStack();
@@ -719,8 +704,8 @@ void FiberPool::runSynchronously(kj::FunctionParam<void()> func) const {
     stack->reset();  // safe to reuse
   }
 
-  KJ_IF_SOME(e, syncFunc.exception) {
-    kj::throwRecoverableException(kj::mv(e));
+  KJ_IF_MAYBE(e, syncFunc.exception) {
+    kj::throwRecoverableException(kj::mv(*e));
   }
 }
 
@@ -799,7 +784,7 @@ struct Executor::Impl {
       for (auto& event: cancel) {
         cancel.remove(event);
 
-        if (event.promiseNode == kj::none) {
+        if (event.promiseNode == nullptr) {
           event.setDoneState();
         } else {
           // We can't destroy the promiseNode while the mutex is locked, because we don't know
@@ -822,7 +807,7 @@ struct Executor::Impl {
     // is released.
 
     for (auto& event: eventsToCancelOutsideLock) {
-      event->promiseNode = kj::none;
+      event->promiseNode = nullptr;
       event->disarm();
     }
 
@@ -834,7 +819,7 @@ struct Executor::Impl {
   }
 
   void disconnect() {
-    state.lockExclusive()->loop = kj::none;
+    state.lockExclusive()->loop = nullptr;
 
     // Now that `loop` is set null in `state`, other threads will no longer try to manipulate our
     // lists, so we can access them without a lock. That's convenient because a bunch of the things
@@ -858,7 +843,7 @@ struct Executor::Impl {
     for (auto& event: s.executing) {
       KJ_ASSERT(event.state == _::XThreadEvent::EXECUTING, event.state) { break; }
       s.executing.remove(event);
-      event.promiseNode = kj::none;
+      event.promiseNode = nullptr;
       event.setDisconnected();
       event.sendReply();
       event.setDoneState();
@@ -867,7 +852,7 @@ struct Executor::Impl {
     for (auto& event: s.cancel) {
       KJ_ASSERT(event.state == _::XThreadEvent::CANCELING, event.state) { break; }
       s.cancel.remove(event);
-      event.promiseNode = kj::none;
+      event.promiseNode = nullptr;
       event.setDoneState();
     }
 
@@ -908,8 +893,8 @@ void XThreadEvent::ensureDoneOrCanceled() {
     auto lock = targetExecutor->impl->state.lockExclusive();
 
     const EventLoop* loop;
-    KJ_IF_SOME(l, lock->loop) {
-      loop = &l;
+    KJ_IF_MAYBE(l, lock->loop) {
+      loop = l;
     } else {
       // Target event loop is already dead, so we know it's already working on transitioning all
       // events to the DONE state. We can just wait.
@@ -930,18 +915,18 @@ void XThreadEvent::ensureDoneOrCanceled() {
         lock->executing.remove(*this);
         lock->cancel.add(*this);
         state = CANCELING;
-        KJ_IF_SOME(p, loop->port) {
-          p.wake();
+        KJ_IF_MAYBE(p, loop->port) {
+          p->wake();
         }
 
-        Maybe<Executor&> maybeSelfExecutor = kj::none;
+        Maybe<Executor&> maybeSelfExecutor = nullptr;
         if (threadLocalEventLoop != nullptr) {
-          KJ_IF_SOME(e, threadLocalEventLoop->executor) {
-            maybeSelfExecutor = *e;
+          KJ_IF_MAYBE(e, threadLocalEventLoop->executor) {
+            maybeSelfExecutor = **e;
           }
         }
 
-        KJ_IF_SOME(selfExecutor, maybeSelfExecutor) {
+        KJ_IF_MAYBE(selfExecutor, maybeSelfExecutor) {
           // If, while waiting for other threads to process our cancellation request, we have
           // cancellation requests queued back to this thread, we must process them. Otherwise,
           // we could deadlock with two threads waiting on each other to process cancellations.
@@ -960,9 +945,9 @@ void XThreadEvent::ensureDoneOrCanceled() {
             lock = {};
 
             Vector<_::XThreadEvent*> eventsToCancelOutsideLock;
-            KJ_DEFER(selfExecutor.impl->processAsyncCancellations(eventsToCancelOutsideLock));
+            KJ_DEFER(selfExecutor->impl->processAsyncCancellations(eventsToCancelOutsideLock));
 
-            auto selfLock = selfExecutor.impl->state.lockExclusive();
+            auto selfLock = selfExecutor->impl->state.lockExclusive();
             selfLock->waitingForCancel = false;
             selfLock->dispatchCancels(eventsToCancelOutsideLock);
 
@@ -978,9 +963,9 @@ void XThreadEvent::ensureDoneOrCanceled() {
             lock = {};
             {
               Vector<_::XThreadEvent*> eventsToCancelOutsideLock;
-              KJ_DEFER(selfExecutor.impl->processAsyncCancellations(eventsToCancelOutsideLock));
+              KJ_DEFER(selfExecutor->impl->processAsyncCancellations(eventsToCancelOutsideLock));
 
-              auto selfLock = selfExecutor.impl->state.lockExclusive();
+              auto selfLock = selfExecutor->impl->state.lockExclusive();
               selfLock->waitingForCancel = true;
 
               // Note that we don't have to proactively delete the PromiseNodes extracted from
@@ -1031,37 +1016,35 @@ void XThreadEvent::ensureDoneOrCanceled() {
     }
   }
 
-  KJ_IF_SOME(e, replyExecutor) {
+  KJ_IF_MAYBE(e, replyExecutor) {
     // Since we know we reached the DONE state (or never left UNUSED), we know that the remote
     // thread is all done playing with our `replyPrev` pointer. Only the current thread could
     // possibly modify it after this point. So we can skip the lock if it's already null.
     if (replyLink.isLinked()) {
-      auto lock = e.impl->state.lockExclusive();
+      auto lock = e->impl->state.lockExclusive();
       lock->replies.remove(*this);
     }
   }
 }
 
-void XThreadEvent::sendReply() noexcept {
-  KJ_IF_SOME(e, replyExecutor) {
+void XThreadEvent::sendReply() {
+  KJ_IF_MAYBE(e, replyExecutor) {
     // Queue the reply.
     const EventLoop* replyLoop;
     {
-      auto lock = e.impl->state.lockExclusive();
-      KJ_IF_SOME(l, lock->loop) {
+      auto lock = e->impl->state.lockExclusive();
+      KJ_IF_MAYBE(l, lock->loop) {
         lock->replies.add(*this);
-        replyLoop = &l;
+        replyLoop = l;
       } else {
         // Calling thread exited without cancelling the promise. This is UB. In fact,
         // `replyExecutor` is probably already destroyed and we are in use-after-free territory
-        // already. Better abort. (sendReply() is noexcept so that this aborts.)
-        //
-        // TODO(someday): XThreadPaf had a similar UB case in ~FulfillScope(), but we got rid of it
-        //   by holding a strong reference to the Executor. Can we do the same here?
-        KJ_FAIL_ASSERT(
+        // already. Better abort.
+        KJ_LOG(FATAL,
             "the thread which called kj::Executor::executeAsync() apparently exited its own "
             "event loop without canceling the cross-thread promise first; this is undefined "
             "behavior so I will crash now");
+        abort();
       }
     }
 
@@ -1070,8 +1053,8 @@ void XThreadEvent::sendReply() noexcept {
     // EventLoop, and when it tries to destroy this promise, it will wait for `state` to become
     // `DONE`, which we don't set until later on. That's nice because wake() probably makes a
     // syscall and we'd rather not hold the lock through syscalls.
-    KJ_IF_SOME(p, replyLoop->port) {
-      p.wake();
+    KJ_IF_MAYBE(p, replyLoop->port) {
+      p->wake();
     }
   }
 }
@@ -1135,29 +1118,29 @@ protected:
 Maybe<Own<Event>> XThreadEvent::fire() {
   static constexpr DelayedDoneHack DISPOSER {};
 
-  KJ_IF_SOME(n, promiseNode) {
-    n->get(result);
-    promiseNode = kj::none;  // make sure to destroy in the thread that created it
+  KJ_IF_MAYBE(n, promiseNode) {
+    n->get()->get(result);
+    promiseNode = nullptr;  // make sure to destroy in the thread that created it
     return Own<Event>(this, DISPOSER);
   } else {
-    KJ_IF_SOME(exception, kj::runCatchingExceptions([&]() {
+    KJ_IF_MAYBE(exception, kj::runCatchingExceptions([&]() {
       promiseNode = execute();
     })) {
-      result.addException(kj::mv(exception));
+      result.addException(kj::mv(*exception));
     };
-    KJ_IF_SOME(n, promiseNode) {
-      n->onReady(this);
+    KJ_IF_MAYBE(n, promiseNode) {
+      n->get()->onReady(this);
     } else {
       return Own<Event>(this, DISPOSER);
     }
   }
 
-  return kj::none;
+  return nullptr;
 }
 
 void XThreadEvent::traceEvent(TraceBuilder& builder) {
-  KJ_IF_SOME(n, promiseNode) {
-    n->tracePromise(builder, true);
+  KJ_IF_MAYBE(n, promiseNode) {
+    n->get()->tracePromise(builder, true);
   }
 
   // We can't safely trace into another thread, so we'll stop here.
@@ -1168,8 +1151,8 @@ void XThreadEvent::onReady(Event* event) noexcept {
   onReadyEvent.init(event);
 }
 
-XThreadPaf::XThreadPaf(Own<const Executor> executor)
-    : state(WAITING), executor(kj::mv(executor)) {}
+XThreadPaf::XThreadPaf()
+    : state(WAITING), executor(getCurrentThreadExecutor()) {}
 XThreadPaf::~XThreadPaf() noexcept(false) {}
 
 void XThreadPaf::destroy() {
@@ -1185,7 +1168,7 @@ void XThreadPaf::destroy() {
   } else {
     // Whoops, another thread is already in the process of fulfilling this promise. We'll have to
     // wait for it to finish and transition the state to FULFILLED.
-    executor->impl->state.when([&](auto&) {
+    executor.impl->state.when([&](auto&) {
       return state == FULFILLED || state == DISPATCHED;
     }, [&](Executor::Impl::State& exState) {
       if (state == FULFILLED) {
@@ -1231,19 +1214,21 @@ XThreadPaf::FulfillScope::FulfillScope(XThreadPaf** pointer) {
 }
 XThreadPaf::FulfillScope::~FulfillScope() noexcept(false) {
   if (obj != nullptr) {
-    auto lock = obj->executor->impl->state.lockExclusive();
-    lock->fulfilled.add(*obj);
-    __atomic_store_n(&obj->state, FULFILLED, __ATOMIC_RELEASE);
-    KJ_IF_SOME(l, lock->loop) {
-      KJ_IF_SOME(p, l.port) {
+    auto lock = obj->executor.impl->state.lockExclusive();
+    KJ_IF_MAYBE(l, lock->loop) {
+      lock->fulfilled.add(*obj);
+      __atomic_store_n(&obj->state, FULFILLED, __ATOMIC_RELEASE);
+      KJ_IF_MAYBE(p, l->port) {
         // TODO(perf): It's annoying we have to call wake() with the lock held, but we have to
         //   prevent the destination EventLoop from being destroyed first.
-        p.wake();
+        p->wake();
       }
     } else {
-      // The thread which called kj::newPromiseAndCrossThreadFulfiller<T>() apparently exited its
-      // own event loop without canceling the cross-thread promise first. Whoever now owns the
-      // promise can only do one thing with it safely: destroy it.
+      KJ_LOG(FATAL,
+          "the thread which called kj::newPromiseAndCrossThreadFulfiller<T>() apparently exited "
+          "its own event loop without canceling the cross-thread promise first; this is "
+          "undefined behavior so I will crash now");
+      abort();
     }
   }
 }
@@ -1269,7 +1254,7 @@ Executor::Executor(EventLoop& loop, Badge<EventLoop>): impl(kj::heap<Impl>(loop)
 Executor::~Executor() noexcept(false) {}
 
 bool Executor::isLive() const {
-  return impl->state.lockShared()->loop != kj::none;
+  return impl->state.lockShared()->loop != nullptr;
 }
 
 void Executor::send(_::XThreadEvent& event, bool sync) const {
@@ -1285,7 +1270,7 @@ void Executor::send(_::XThreadEvent& event, bool sync) const {
 
       // If the function returns a promise, we have no way to pump the event loop to wait for it,
       // because the event loop may already be pumping somewhere up the stack.
-      KJ_ASSERT(promiseNode == kj::none,
+      KJ_ASSERT(promiseNode == nullptr,
           "can't call executeSync() on own thread's executor with a promise-returning function");
 
       return;
@@ -1300,8 +1285,8 @@ void Executor::send(_::XThreadEvent& event, bool sync) const {
 
   auto lock = impl->state.lockExclusive();
   const EventLoop* loop;
-  KJ_IF_SOME(l, lock->loop) {
-    loop = &l;
+  KJ_IF_MAYBE(l, lock->loop) {
+    loop = l;
   } else {
     event.setDisconnected();
     return;
@@ -1310,8 +1295,8 @@ void Executor::send(_::XThreadEvent& event, bool sync) const {
   event.state = _::XThreadEvent::QUEUED;
   lock->start.add(event);
 
-  KJ_IF_SOME(p, loop->port) {
-    p.wake();
+  KJ_IF_MAYBE(p, loop->port) {
+    p->wake();
   } else {
     // Event loop will be waiting on executor.wait(), which will be woken when we unlock the mutex.
   }
@@ -1348,8 +1333,8 @@ bool Executor::poll() {
 }
 
 EventLoop& Executor::getLoop() const {
-  KJ_IF_SOME(l, impl->state.lockShared()->loop) {
-    return l;
+  KJ_IF_MAYBE(l, impl->state.lockShared()->loop) {
+    return *l;
   } else {
     kj::throwFatalException(KJ_EXCEPTION(DISCONNECTED, "Executor's event loop has exited"));
   }
@@ -1412,14 +1397,6 @@ struct FiberStack::Impl {
     KJ_ON_SCOPE_FAILURE({
       KJ_SYSCALL(munmap(stackMapping, allocSize)) { break; }
     });
-
-#if __linux__
-#if defined(PR_SET_VMA) && defined(PR_SET_VMA_ANON_NAME)
-    // Try to name the virtual memory area for debugging purposes. This may fail if the kernel was
-    // not configured with the CONFIG_ANON_VMA_NAME option.
-    prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, stackMapping, allocSize, "kj_fiber_stack");
-#endif
-#endif
 
     void* stack = reinterpret_cast<byte*>(stackMapping) + pageSize;
     // Now mark everything except the guard page as read-write. We assume the stack grows down, so
@@ -1507,34 +1484,21 @@ struct FiberStack::StartRoutine {
 void FiberStack::run() {
   // Loop forever so that the fiber can be reused.
   for (;;) {
-    // Run one fiber assignment. Note that the fiber remains on a specific thread for the duration
-    // of this call.
-    runOne();
+    KJ_SWITCH_ONEOF(main) {
+      KJ_CASE_ONEOF(event, FiberBase*) {
+        event->run();
+      }
+      KJ_CASE_ONEOF(func, SynchronousFunc*) {
+        KJ_IF_MAYBE(exception, kj::runCatchingExceptions(func->func)) {
+          func->exception.emplace(kj::mv(*exception));
+        }
+      }
+    }
 
     // Wait for the fiber to be used again. Note the fiber might simply be destroyed without this
     // ever returning. That's OK because we don't have any nontrivial destructors on the stack
     // at this point.
     switchToMain();
-
-    // WARNING: We may have switched threads at this point. Clang is known to cache the location
-    // of thread_locals with the assumption that a particular stack frame cannot switch threads.
-    // Therefore, it's important that we do not access any thread_locals in this function nor
-    // anything that could be inlined into this function. Hence why `runOne()` is marked noinline.
-    // (Luckily, we do not need to worry about the caller since this function is marked
-    // [[noreturn]]).
-  }
-}
-
-void FiberStack::runOne() {
-  KJ_SWITCH_ONEOF(main) {
-    KJ_CASE_ONEOF(event, FiberBase*) {
-      event->run();
-    }
-    KJ_CASE_ONEOF(func, SynchronousFunc*) {
-      KJ_IF_SOME(exception, kj::runCatchingExceptions(func->func)) {
-        func->exception.emplace(kj::mv(exception));
-      }
-    }
   }
 }
 
@@ -1569,11 +1533,15 @@ FiberStack::FiberStack(size_t stackSizeParam)
   __sanitizer_finish_switch_fiber(impl->originalFakeStack, nullptr, nullptr);
 #endif
 #else
+#if KJ_NO_EXCEPTIONS
+  KJ_UNIMPLEMENTED("Fibers are not implemented because exceptions are disabled");
+#else
   KJ_UNIMPLEMENTED(
       "Fibers are not implemented on this platform because its C library lacks setcontext() "
       "and friends. If you'd like to see fiber support added, file a bug to let us know. "
       "We can likely make it happen using assembly, but didn't want to try unless it was "
       "actually needed.");
+#endif
 #endif
 }
 
@@ -1634,9 +1602,8 @@ void FiberBase::cancel() {
     case RUNNING:
     case CANCELED:
       // Bad news.
-      []() noexcept {
-        KJ_FAIL_ASSERT("fiber tried to cancel itself");
-      }();
+      KJ_LOG(FATAL, "fiber tried to cancel itself");
+      ::abort();
       break;
 
     case FINISHED:
@@ -1650,7 +1617,7 @@ Maybe<Own<Event>> FiberBase::fire() {
   KJ_ASSERT(state == WAITING);
   state = RUNNING;
   stack->switchToFiber();
-  return kj::none;
+  return nullptr;
 }
 
 void FiberStack::switchToFiber() {
@@ -1695,6 +1662,7 @@ void FiberStack::switchToMain() {
 }
 
 void FiberBase::run() {
+#if !KJ_NO_EXCEPTIONS
   bool caughtCanceled = false;
   state = RUNNING;
   KJ_DEFER(state = FINISHED);
@@ -1702,10 +1670,10 @@ void FiberBase::run() {
   WaitScope waitScope(currentEventLoop(), *this);
 
   try {
-    KJ_IF_SOME(exception, kj::runCatchingExceptions([&]() {
+    KJ_IF_MAYBE(exception, kj::runCatchingExceptions([&]() {
       runImpl(waitScope);
     })) {
-      result.addException(kj::mv(exception));
+      result.addException(kj::mv(*exception));
     }
   } catch (CanceledException) {
     if (state != CANCELED) {
@@ -1721,6 +1689,7 @@ void FiberBase::run() {
   }
 
   onReadyEvent.arm();
+#endif
 }
 
 void FiberBase::onReady(_::Event* event) noexcept {
@@ -1729,12 +1698,12 @@ void FiberBase::onReady(_::Event* event) noexcept {
 
 void FiberBase::tracePromise(TraceBuilder& builder, bool stopAtNextEvent) {
   if (stopAtNextEvent) return;
-  currentInner->get()->tracePromise(builder, false);
+  currentInner->tracePromise(builder, false);
   stack->trace(builder);
 }
 
 void FiberBase::traceEvent(TraceBuilder& builder) {
-  currentInner->get()->tracePromise(builder, true);
+  currentInner->tracePromise(builder, true);
   stack->trace(builder);
   onReadyEvent.traceEvent(builder);
 }
@@ -1765,9 +1734,9 @@ EventLoop::~EventLoop() noexcept(false) {
   }
   daemons = nullptr;
 
-  KJ_IF_SOME(e, executor) {
+  KJ_IF_MAYBE(e, executor) {
     // Cancel all outstanding cross-thread events.
-    e->impl->disconnect();
+    e->get()->impl->disconnect();
   }
 
   // The application _should_ destroy everything using the EventLoop before destroying the
@@ -1847,8 +1816,8 @@ bool EventLoop::isRunnable() {
 }
 
 const Executor& EventLoop::getExecutor() {
-  KJ_IF_SOME(e, executor) {
-    return *e;
+  KJ_IF_MAYBE(e, executor) {
+    return **e;
   } else {
     return *executor.emplace(kj::atomicRefcounted<_::ExecutorImpl>(*this, Badge<EventLoop>()));
   }
@@ -1856,8 +1825,8 @@ const Executor& EventLoop::getExecutor() {
 
 void EventLoop::setRunnable(bool runnable) {
   if (runnable != lastRunnableState) {
-    KJ_IF_SOME(p, port) {
-      p.setRunnable(runnable);
+    KJ_IF_MAYBE(p, port) {
+      p->setRunnable(runnable);
     }
     lastRunnableState = runnable;
   }
@@ -1877,44 +1846,30 @@ void EventLoop::leaveScope() {
 }
 
 void EventLoop::wait() {
-  if (wouldSleepHead != nullptr) {
-    // Oh, someone wants to know when we are going to sleep. Use poll() instead so that we don't
-    // actually sleep. poll() will queue the would-sleep waiter if needed.
-    poll();
-    return;
-  }
-
-  KJ_IF_SOME(p, port) {
-    if (p.wait()) {
+  KJ_IF_MAYBE(p, port) {
+    if (p->wait()) {
       // Another thread called wake(). Check for cross-thread events.
-      KJ_IF_SOME(e, executor) {
-        e->poll();
+      KJ_IF_MAYBE(e, executor) {
+        e->get()->poll();
       }
     }
-  } else KJ_IF_SOME(e, executor) {
-    e->wait();
+  } else KJ_IF_MAYBE(e, executor) {
+    e->get()->wait();
   } else {
     KJ_FAIL_REQUIRE("Nothing to wait for; this thread would hang forever.");
   }
 }
 
 void EventLoop::poll() {
-  KJ_IF_SOME(p, port) {
-    if (p.poll()) {
+  KJ_IF_MAYBE(p, port) {
+    if (p->poll()) {
       // Another thread called wake(). Check for cross-thread events.
-      KJ_IF_SOME(e, executor) {
-        e->poll();
+      KJ_IF_MAYBE(e, executor) {
+        e->get()->poll();
       }
     }
-  } else KJ_IF_SOME(e, executor) {
-    e->poll();
-  }
-
-  if (head == nullptr && wouldSleepHead != nullptr) {
-    // We got nothing by polling. So, enqueue the next would-sleep event instead.
-    _::Event* event = wouldSleepHead;
-    event->disarm();
-    event->armDepthFirst();
+  } else KJ_IF_MAYBE(e, executor) {
+    e->get()->poll();
   }
 }
 
@@ -1944,87 +1899,61 @@ uint WaitScope::poll(uint maxTurnCount) {
   return turnCount;
 }
 
-void EventLoop::cancelAllDetached() {
-  KJ_REQUIRE(this == threadLocalEventLoop,
-      "can't call cancelAllDetached() on an EventLoop that isn't current in the thread");
+void WaitScope::cancelAllDetached() {
+  KJ_REQUIRE(fiber == nullptr,
+      "can't call cancelAllDetached() on a fiber WaitScope, only top-level");
 
-  while (!daemons->isEmpty()) {
-    auto oldDaemons = kj::mv(daemons);
-    daemons = kj::heap<TaskSet>(_::LoggingErrorHandler::instance);
+  while (!loop.daemons->isEmpty()) {
+    auto oldDaemons = kj::mv(loop.daemons);
+    loop.daemons = kj::heap<TaskSet>(_::LoggingErrorHandler::instance);
     // Destroying `oldDaemons` could theoretically add new ones.
   }
 }
 
-void WaitScope::cancelAllDetached() {
-  KJ_REQUIRE(fiber == kj::none,
-      "can't call cancelAllDetached() on a fiber WaitScope, only top-level");
-
-  loop.cancelAllDetached();
-}
-
-struct EventLoop::LocalMap {
-  kj::HashMap<const void*, kj::Own<void>> map;
-};
-
-void* EventLoop::getLocal(const void* key, kj::Own<void>(*allocate)()) {
-  EventLoop* loop = threadLocalEventLoop;
-  KJ_REQUIRE(loop != nullptr, "there is no current EventLoop in this thread");
-
-  LocalMap* localMap;
-  KJ_IF_SOME(m, loop->localMap) {
-    localMap = m;
-  } else {
-    localMap = loop->localMap.emplace(kj::heap<LocalMap>());
-  }
-
-  return localMap->map.findOrCreate(key, [&]() -> decltype(localMap->map)::Entry {
-    return {
-      .key = key,
-      .value = allocate()
-    };
-  }).get();
-}
-
 namespace _ {  // private
 
+#if !KJ_NO_EXCEPTIONS
 static kj::CanceledException fiberCanceledException() {
   // Construct the exception to throw from wait() when the fiber has been canceled (because the
   // promise returned by startFiber() was dropped before completion).
   return kj::CanceledException { };
 };
+#endif
 
 void waitImpl(_::OwnPromiseNode&& node, _::ExceptionOrValue& result, WaitScope& waitScope,
               SourceLocation location) {
   EventLoop& loop = waitScope.loop;
   KJ_REQUIRE(&loop == threadLocalEventLoop, "WaitScope not valid for this thread.");
 
+#if !KJ_NO_EXCEPTIONS
   // we don't support fibers when running without exceptions, so just remove the whole block
-  KJ_IF_SOME(fiber, waitScope.fiber) {
-    if (fiber.state == FiberBase::CANCELED) {
+  KJ_IF_MAYBE(fiber, waitScope.fiber) {
+    if (fiber->state == FiberBase::CANCELED) {
       throw fiberCanceledException();
     }
-    KJ_REQUIRE(fiber.state == FiberBase::RUNNING,
+    KJ_REQUIRE(fiber->state == FiberBase::RUNNING,
         "This WaitScope can only be used within the fiber that created it.");
 
     node->setSelfPointer(&node);
-    node->onReady(&fiber);
+    node->onReady(fiber);
 
-    fiber.currentInner = &node;
-    KJ_DEFER(fiber.currentInner = nullptr);
+    fiber->currentInner = node;
+    KJ_DEFER(fiber->currentInner = nullptr);
 
     // Switch to the main stack to run the event loop.
-    fiber.state = FiberBase::WAITING;
-    fiber.stack->switchToMain();
+    fiber->state = FiberBase::WAITING;
+    fiber->stack->switchToMain();
 
     // The main stack switched back to us, meaning either the event we registered with
     // node->onReady() fired, or we are being canceled by FiberBase's destructor.
 
-    if (fiber.state == FiberBase::CANCELED) {
+    if (fiber->state == FiberBase::CANCELED) {
       throw fiberCanceledException();
     }
 
-    KJ_ASSERT(fiber.state == FiberBase::RUNNING);
+    KJ_ASSERT(fiber->state == FiberBase::RUNNING);
   } else {
+#endif
     KJ_REQUIRE(!loop.running, "wait() is not allowed from within event callbacks.");
 
     RootEvent doneEvent(node, reinterpret_cast<void*>(&waitImpl), location);
@@ -2057,14 +1986,16 @@ void waitImpl(_::OwnPromiseNode&& node, _::ExceptionOrValue& result, WaitScope& 
     }
 
     loop.setRunnable(loop.isRunnable());
+#if !KJ_NO_EXCEPTIONS
   }
+#endif
 
   waitScope.runOnStackPool([&]() {
     node->get(result);
-    KJ_IF_SOME(exception, kj::runCatchingExceptions([&]() {
+    KJ_IF_MAYBE(exception, kj::runCatchingExceptions([&]() {
       node = nullptr;
     })) {
-      result.addException(kj::mv(exception));
+      result.addException(kj::mv(*exception));
     }
   });
 }
@@ -2072,7 +2003,7 @@ void waitImpl(_::OwnPromiseNode&& node, _::ExceptionOrValue& result, WaitScope& 
 bool pollImpl(_::PromiseNode& node, WaitScope& waitScope, SourceLocation location) {
   EventLoop& loop = waitScope.loop;
   KJ_REQUIRE(&loop == threadLocalEventLoop, "WaitScope not valid for this thread.");
-  KJ_REQUIRE(waitScope.fiber == kj::none, "poll() is not supported in fibers.");
+  KJ_REQUIRE(waitScope.fiber == nullptr, "poll() is not supported in fibers.");
   KJ_REQUIRE(!loop.running, "poll() is not allowed from within event callbacks.");
 
   RootEvent doneEvent(&node, reinterpret_cast<void*>(&pollImpl), location);
@@ -2103,6 +2034,46 @@ bool pollImpl(_::PromiseNode& node, WaitScope& waitScope, SourceLocation locatio
 
   loop.setRunnable(loop.isRunnable());
   return true;
+}
+
+Promise<void> yield() {
+  class YieldPromiseNode final: public _::PromiseNode {
+  public:
+    void destroy() override {}
+
+    void onReady(_::Event* event) noexcept override {
+      if (event) event->armBreadthFirst();
+    }
+    void get(_::ExceptionOrValue& output) noexcept override {
+      output.as<_::Void>() = _::Void();
+    }
+    void tracePromise(_::TraceBuilder& builder, bool stopAtNextEvent) override {
+      builder.add(reinterpret_cast<void*>(&kj::evalLater<DummyFunctor>));
+    }
+  };
+
+  static YieldPromiseNode NODE;
+  return _::PromiseNode::to<Promise<void>>(OwnPromiseNode(&NODE));
+}
+
+Promise<void> yieldHarder() {
+  class YieldHarderPromiseNode final: public _::PromiseNode {
+  public:
+    void destroy() override {}
+
+    void onReady(_::Event* event) noexcept override {
+      if (event) event->armLast();
+    }
+    void get(_::ExceptionOrValue& output) noexcept override {
+      output.as<_::Void>() = _::Void();
+    }
+    void tracePromise(_::TraceBuilder& builder, bool stopAtNextEvent) override {
+      builder.add(reinterpret_cast<void*>(&kj::evalLast<DummyFunctor>));
+    }
+  };
+
+  static YieldHarderPromiseNode NODE;
+  return _::PromiseNode::to<Promise<void>>(OwnPromiseNode(&NODE));
 }
 
 OwnPromiseNode readyNow() {
@@ -2159,7 +2130,7 @@ Event::Event(SourceLocation location)
 Event::Event(kj::EventLoop& loop, SourceLocation location)
     : loop(loop), next(nullptr), prev(nullptr), location(location) {}
 
-Event::~Event() noexcept {  // intentionally noexcept
+Event::~Event() noexcept(false) {
   live = 0;
 
   // Prevent compiler from eliding this store above. This line probably isn't needed because there
@@ -2172,8 +2143,6 @@ Event::~Event() noexcept {  // intentionally noexcept
 
   disarm();
 
-  // If this fails, we'll abort due to `noexcept`. That's good because otherwise we're likely to
-  // be in a use-after-free situation.
   KJ_REQUIRE(!firing, "Promise callback destroyed itself.");
 }
 
@@ -2265,42 +2234,16 @@ void Event::armLast() {
   }
 }
 
-void Event::armWhenWouldSleep() {
-  KJ_REQUIRE(threadLocalEventLoop == &loop || threadLocalEventLoop == nullptr,
-             "Event armed from different thread than it was created in.  You must use "
-             "Executor to queue events cross-thread.");
-  if (live != MAGIC_LIVE_VALUE) {
-    ([this]() noexcept {
-      KJ_FAIL_ASSERT("tried to arm Event after it was destroyed", location);
-    })();
-  }
-
-  if (prev == nullptr) {
-    next = loop.wouldSleepHead;
-    prev = &loop.wouldSleepHead;
-    *prev = this;
-    if (next != nullptr) {
-      next->prev = &next;
-    }
-
-    if (loop.wouldSleepTail == prev) {
-      loop.wouldSleepTail = &next;
-    }
-
-    loop.setRunnable(true);
-  }
-}
-
 bool Event::isNext() {
   return loop.running && loop.head == this;
 }
 
-void Event::disarm() noexcept {
+void Event::disarm() {
   if (prev != nullptr) {
     if (threadLocalEventLoop != &loop && threadLocalEventLoop != nullptr) {
-      // This will crash because the method is `noexcept`. That's good because otherwise we're
-      // likely going to segfault later.
-      KJ_FAIL_ASSERT("Promise destroyed from a different thread than it was created in.");
+      KJ_LOG(FATAL, "Promise destroyed from a different thread than it was created in.");
+      // There's no way out of this place without UB, so abort now.
+      abort();
     }
 
     if (loop.tail == &next) {
@@ -2311,9 +2254,6 @@ void Event::disarm() noexcept {
     }
     if (loop.breadthFirstInsertPoint == &next) {
       loop.breadthFirstInsertPoint = prev;
-    }
-    if (loop.wouldSleepTail == &next) {
-      loop.wouldSleepTail = prev;
     }
 
     *prev = next;
@@ -2327,7 +2267,7 @@ void Event::disarm() noexcept {
 }
 
 String Event::traceEvent() {
-  void* space[32]{};
+  void* space[32];
   TraceBuilder builder(space);
   traceEvent(builder);
   return kj::str(builder);
@@ -2352,7 +2292,7 @@ ArrayPtr<void* const> getAsyncTrace(ArrayPtr<void*> space) {
 }
 
 kj::String getAsyncTrace() {
-  void* space[32]{};
+  void* space[32];
   auto trace = getAsyncTrace(space);
   return kj::str(stringifyStackTraceAddresses(trace), stringifyStackTrace(trace));
 }
@@ -2362,7 +2302,7 @@ kj::String getAsyncTrace() {
 namespace _ {  // private
 
 kj::String PromiseBase::trace() {
-  void* space[32]{};
+  void* space[32];
   TraceBuilder builder(space);
   node->tracePromise(builder, false);
   return kj::str(builder);
@@ -2468,11 +2408,11 @@ void TransformPromiseNodeBase::onReady(Event* event) noexcept {
 }
 
 void TransformPromiseNodeBase::get(ExceptionOrValue& output) noexcept {
-  KJ_IF_SOME(exception, kj::runCatchingExceptions([&]() {
+  KJ_IF_MAYBE(exception, kj::runCatchingExceptions([&]() {
     getImpl(output);
     dropDependency();
   })) {
-    output.addException(kj::mv(exception));
+    output.addException(kj::mv(*exception));
   }
 }
 
@@ -2493,14 +2433,14 @@ void TransformPromiseNodeBase::dropDependency() {
 
 void TransformPromiseNodeBase::getDepResult(ExceptionOrValue& output) {
   dependency->get(output);
-  KJ_IF_SOME(exception, kj::runCatchingExceptions([&]() {
+  KJ_IF_MAYBE(exception, kj::runCatchingExceptions([&]() {
     dependency = nullptr;
   })) {
-    output.addException(kj::mv(exception));
+    output.addException(kj::mv(*exception));
   }
 
-  KJ_IF_SOME(e, output.exception) {
-    e.addTrace(continuationTracePtr);
+  KJ_IF_MAYBE(e, output.exception) {
+    e->addTrace(continuationTracePtr);
   }
 }
 
@@ -2531,10 +2471,10 @@ void ForkBranchBase::hubReady() noexcept {
 }
 
 void ForkBranchBase::releaseHub(ExceptionOrValue& output) {
-  KJ_IF_SOME(exception, kj::runCatchingExceptions([this]() {
+  KJ_IF_MAYBE(exception, kj::runCatchingExceptions([this]() {
     hub = nullptr;
   })) {
-    output.addException(kj::mv(exception));
+    output.addException(kj::mv(*exception));
   }
 }
 
@@ -2565,10 +2505,10 @@ ForkHubBase::ForkHubBase(OwnPromiseNode&& innerParam, ExceptionOrValue& resultRe
 Maybe<Own<Event>> ForkHubBase::fire() {
   // Dependency is ready.  Fetch its result and then delete the node.
   inner->get(resultRef);
-  KJ_IF_SOME(exception, kj::runCatchingExceptions([this]() {
+  KJ_IF_MAYBE(exception, kj::runCatchingExceptions([this]() {
     inner = nullptr;
   })) {
-    resultRef.addException(kj::mv(exception));
+    resultRef.addException(kj::mv(*exception));
   }
 
   for (auto branch = headBranch; branch != nullptr; branch = branch->next) {
@@ -2581,7 +2521,7 @@ Maybe<Own<Event>> ForkHubBase::fire() {
   // Indicate that the list is no longer active.
   tailBranch = nullptr;
 
-  return kj::none;
+  return nullptr;
 }
 
 void ForkHubBase::traceEvent(TraceBuilder& builder) {
@@ -2653,21 +2593,21 @@ Maybe<Own<Event>> ChainPromiseNode::fire() {
   ExceptionOr<PromiseBase> intermediate;
   inner->get(intermediate);
 
-  KJ_IF_SOME(exception, kj::runCatchingExceptions([this]() {
+  KJ_IF_MAYBE(exception, kj::runCatchingExceptions([this]() {
     inner = nullptr;
   })) {
-    intermediate.addException(kj::mv(exception));
+    intermediate.addException(kj::mv(*exception));
   }
 
-  KJ_IF_SOME(exception, intermediate.exception) {
+  KJ_IF_MAYBE(exception, intermediate.exception) {
     // There is an exception.  If there is also a value, delete it.
-    kj::runCatchingExceptions([&]() { intermediate.value = kj::none; });
+    kj::runCatchingExceptions([&]() { intermediate.value = nullptr; });
     // Now set step2 to a rejected promise.
-    inner = allocPromise<ImmediateBrokenPromiseNode>(kj::mv(exception));
-  } else KJ_IF_SOME(value, intermediate.value) {
+    inner = allocPromise<ImmediateBrokenPromiseNode>(kj::mv(*exception));
+  } else KJ_IF_MAYBE(value, intermediate.value) {
     // There is a value and no exception.  The value is itself a promise.  Adopt it as our
     // step2.
-    inner = _::PromiseNode::from(kj::mv(value));
+    inner = _::PromiseNode::from(kj::mv(*value));
   } else {
     // We can only get here if inner->get() returned neither an exception nor a
     // value, which never actually happens.
@@ -2692,7 +2632,7 @@ Maybe<Own<Event>> ChainPromiseNode::fire() {
       inner->onReady(onReadyEvent);
     }
 
-    return kj::none;
+    return nullptr;
   }
 }
 
@@ -2779,7 +2719,7 @@ Maybe<Own<Event>> ExclusiveJoinPromiseNode::Branch::fire() {
     // The other branch already fired, and this branch was canceled. It's possible for both
     // branches to fire if both were armed simultaneously.
   }
-  return kj::none;
+  return nullptr;
 }
 
 void ExclusiveJoinPromiseNode::Branch::traceEvent(TraceBuilder& builder) {
@@ -2822,15 +2762,15 @@ void ArrayJoinPromiseNodeBase::get(ExceptionOrValue& output) noexcept {
     }
 
     // If any of the elements threw exceptions, propagate them.
-    KJ_IF_SOME(exception, branch.output.exception) {
-      output.addException(kj::mv(exception));
+    KJ_IF_MAYBE(exception, branch.output.exception) {
+      output.addException(kj::mv(*exception));
     }
   }
 
   // We either failed fast, or waited for all promises.
-  KJ_DASSERT(countLeft == 0 || output.exception != kj::none);
+  KJ_DASSERT(countLeft == 0 || output.exception != nullptr);
 
-  if (output.exception == kj::none) {
+  if (output.exception == nullptr) {
     // No errors.  The template subclass will need to fill in the result.
     getNoError(output);
   }
@@ -2867,13 +2807,13 @@ Maybe<Own<Event>> ArrayJoinPromiseNodeBase::Branch::fire() {
   if (joinNode.joinBehavior == ArrayJoinBehavior::EAGER) {
     // This implements `joinPromisesFailFast()`'s eager-evaluation semantics.
     dependency->get(output);
-    if (output.exception != kj::none && !joinNode.armed) {
+    if (output.exception != nullptr && !joinNode.armed) {
       joinNode.onReadyEvent.arm();
       joinNode.armed = true;
     }
   }
 
-  return kj::none;
+  return nullptr;
 }
 
 void ArrayJoinPromiseNodeBase::Branch::traceEvent(TraceBuilder& builder) {
@@ -2896,96 +2836,6 @@ void ArrayJoinPromiseNode<void>::getNoError(ExceptionOrValue& output) noexcept {
   output.as<_::Void>() = _::Void();
 }
 
-RaceSuccessfulPromiseNodeBase::RaceSuccessfulPromiseNodeBase(
-    Array<OwnPromiseNode> promises, ExceptionOrValue &output,
-    SourceLocation location)
-    : output(output), countLeft(promises.size()) {
-  // Make the branches.
-  auto builder = heapArrayBuilder<Branch>(promises.size());
-  for (uint i : indices(promises)) {
-    builder.add(*this, kj::mv(promises[i]), location);
-  }
-  branches = builder.finish();
-
-  if (branches.size() == 0) {
-    onReadyEvent.arm();
-  }
-}
-RaceSuccessfulPromiseNodeBase::~RaceSuccessfulPromiseNodeBase() noexcept(
-    false) {}
-
-void RaceSuccessfulPromiseNodeBase::onReady(Event *event) noexcept {
-  onReadyEvent.init(event);
-}
-
-void RaceSuccessfulPromiseNodeBase::get(ExceptionOrValue &output) noexcept {
-  KJ_IF_SOME(exception, this->output.exception) {
-    output.addException(kj::mv(exception));
-  } else {
-    getNoError(output);
-  }
-}
-
-void RaceSuccessfulPromiseNodeBase::tracePromise(TraceBuilder &builder,
-                                                 bool stopAtNextEvent) {
-  if (stopAtNextEvent)
-    return;
-
-  // Trace the first branch I guess.
-  if (branches != nullptr) {
-    branches[0].promise->tracePromise(builder, false);
-  }
-}
-
-RaceSuccessfulPromiseNodeBase::Branch::Branch(
-    RaceSuccessfulPromiseNodeBase &parent, OwnPromiseNode dependencyParam,
-    SourceLocation location)
-    : Event(location), parent(parent), promise(kj::mv(dependencyParam)) {
-  promise->setSelfPointer(&promise);
-  promise->onReady(this);
-}
-
-RaceSuccessfulPromiseNodeBase::Branch::~Branch() noexcept(false) {}
-
-Maybe<Own<Event>> RaceSuccessfulPromiseNodeBase::Branch::fire() {
-  if (parent.armed) {
-    // the parent node has already received the value, no need to bother with
-    // anything
-    return kj::none;
-  }
-
-  auto count = --parent.countLeft;
-  promise->get(parent.output);
-
-  if (parent.output.exception == kj::none) {
-    // our promise was successful
-
-    // cancel the others, ignore errors caused by cancellations
-    for (auto& otherBranch: parent.branches) {
-      if (this != &otherBranch) {
-        kj::runCatchingExceptions([&]() { otherBranch.promise = nullptr; });
-      }
-    }
-  }
-
-  if (parent.output.exception == kj::none || count == 0) {
-    // we're either successful or the only one left, trigger the parent
-    parent.armed = true;
-    parent.onReadyEvent.arm();
-  }
-
-  return kj::none;
-}
-
-void RaceSuccessfulPromiseNodeBase::Branch::traceEvent(TraceBuilder &builder) {
-  promise->tracePromise(builder, true);
-  parent.onReadyEvent.traceEvent(builder);
-}
-
-RaceSuccessfulPromiseNode<void>::RaceSuccessfulPromiseNode(
-    Array<OwnPromiseNode> promises, SourceLocation location)
-    : RaceSuccessfulPromiseNodeBase(kj::mv(promises), output, location) {}
-
 }  // namespace _ (private)
 
 Promise<void> joinPromises(Array<Promise<void>>&& promises, SourceLocation location) {
@@ -3000,66 +2850,6 @@ Promise<void> joinPromisesFailFast(Array<Promise<void>>&& promises, SourceLocati
       KJ_MAP(p, promises) { return _::PromiseNode::from(kj::mv(p)); },
       heapArray<_::ExceptionOr<_::Void>>(promises.size()), location,
       _::ArrayJoinBehavior::EAGER));
-}
-
-Promise<void> yield() {
-  class YieldPromiseNode final: public _::PromiseNode {
-  public:
-    void destroy() override {}
-
-    void onReady(_::Event* event) noexcept override {
-      if (event) event->armBreadthFirst();
-    }
-    void get(_::ExceptionOrValue& output) noexcept override {
-      output.as<_::Void>() = _::Void();
-    }
-    void tracePromise(_::TraceBuilder& builder, bool stopAtNextEvent) override {
-      builder.add(reinterpret_cast<void*>(&kj::yield));
-    }
-  };
-
-  static YieldPromiseNode NODE;
-  return _::PromiseNode::to<Promise<void>>(_::OwnPromiseNode(&NODE));
-}
-
-Promise<void> yieldUntilQueueEmpty() {
-  class YieldUntilQueueEmptyPromiseNode final: public _::PromiseNode {
-  public:
-    void destroy() override {}
-
-    void onReady(_::Event* event) noexcept override {
-      if (event) event->armLast();
-    }
-    void get(_::ExceptionOrValue& output) noexcept override {
-      output.as<_::Void>() = _::Void();
-    }
-    void tracePromise(_::TraceBuilder& builder, bool stopAtNextEvent) override {
-      builder.add(reinterpret_cast<void*>(&kj::yieldUntilQueueEmpty));
-    }
-  };
-
-  static YieldUntilQueueEmptyPromiseNode NODE;
-  return _::PromiseNode::to<Promise<void>>(_::OwnPromiseNode(&NODE));
-}
-
-Promise<void> yieldUntilWouldSleep() {
-  class YieldUntilWouldSleepPromiseNode final: public _::PromiseNode {
-  public:
-    void destroy() override {}
-
-    void onReady(_::Event* event) noexcept override {
-      if (event) event->armWhenWouldSleep();
-    }
-    void get(_::ExceptionOrValue& output) noexcept override {
-      output.as<_::Void>() = _::Void();
-    }
-    void tracePromise(_::TraceBuilder& builder, bool stopAtNextEvent) override {
-      builder.add(reinterpret_cast<void*>(&kj::yieldUntilWouldSleep));
-    }
-  };
-
-  static YieldUntilWouldSleepPromiseNode NODE;
-  return _::PromiseNode::to<Promise<void>>(_::OwnPromiseNode(&NODE));
 }
 
 namespace _ {  // (private)
@@ -3097,14 +2887,14 @@ void EagerPromiseNodeBase::traceEvent(TraceBuilder& builder) {
 
 Maybe<Own<Event>> EagerPromiseNodeBase::fire() {
   dependency->get(resultRef);
-  KJ_IF_SOME(exception, kj::runCatchingExceptions([this]() {
+  KJ_IF_MAYBE(exception, kj::runCatchingExceptions([this]() {
     dependency = nullptr;
   })) {
-    resultRef.addException(kj::mv(exception));
+    resultRef.addException(kj::mv(*exception));
   }
 
   onReadyEvent.arm();
-  return kj::none;
+  return nullptr;
 }
 
 // -------------------------------------------------------------------
@@ -3152,6 +2942,8 @@ Promise<void> IdentityFunc<Promise<void>>::operator()() const { return READY_NOW
 
 // -------------------------------------------------------------------
 
+#if KJ_HAS_COROUTINE
+
 namespace _ {  // (private)
 
 CoroutineBase::CoroutineBase(stdcoro::coroutine_handle<> coroutine, ExceptionOrValue& resultRef,
@@ -3170,10 +2962,10 @@ void CoroutineBase::unhandled_exception() {
 
   auto exception = getCaughtExceptionAsKj();
 
-  KJ_IF_SOME(disposalResults, maybeDisposalResults) {
+  KJ_IF_MAYBE(disposalResults, maybeDisposalResults) {
     // Exception during coroutine destruction. Only record the first one.
-    if (disposalResults.exception == kj::none) {
-      disposalResults.exception = kj::mv(exception);
+    if (disposalResults->exception == nullptr) {
+      disposalResults->exception = kj::mv(exception);
     }
   } else if (isWaiting()) {
     // Exception during coroutine execution.
@@ -3211,7 +3003,7 @@ void CoroutineBase::onReady(Event* event) noexcept {
 void CoroutineBase::tracePromise(TraceBuilder& builder, bool stopAtNextEvent) {
   if (stopAtNextEvent) return;
 
-  KJ_IF_SOME(promise, promiseNodeForTrace) {
+  KJ_IF_MAYBE(promise, promiseNodeForTrace) {
     promise->tracePromise(builder, stopAtNextEvent);
   }
 
@@ -3221,22 +3013,28 @@ void CoroutineBase::tracePromise(TraceBuilder& builder, bool stopAtNextEvent) {
 };
 
 Maybe<Own<Event>> CoroutineBase::fire() {
-  // Call PromiseAwaiter::await_resume() and proceed with the coroutine. Note that this will not
-  // destroy the coroutine if control flows off the end of it, because we return suspend_always()
-  // from final_suspend().
+  // Call Awaiter::await_resume() and proceed with the coroutine. Note that this will not destroy
+  // the coroutine if control flows off the end of it, because we return suspend_always() from
+  // final_suspend().
   //
   // It's tempting to arrange to check for exceptions right now and reject the promise that owns
   // us without resuming the coroutine, which would save us from throwing an exception when we
-  // already know where it's going. But, we don't really know: the `co_await` might be in a
-  // try-catch block, so we have no choice but to resume and throw later.
+  // already know where it's going. But, we don't really know: unlike in the KJ_NO_EXCEPTIONS
+  // case, the `co_await` might be in a try-catch block, so we have no choice but to resume and
+  // throw later.
+  //
+  // TODO(someday): If we ever support coroutines with -fno-exceptions, we'll need to reject the
+  //   enclosing coroutine promise here, if the Awaiter's result is exceptional.
+
+  promiseNodeForTrace = nullptr;
 
   coroutine.resume();
 
-  return kj::none;
+  return nullptr;
 }
 
 void CoroutineBase::traceEvent(TraceBuilder& builder) {
-  KJ_IF_SOME(promise, promiseNodeForTrace) {
+  KJ_IF_MAYBE(promise, promiseNodeForTrace) {
     promise->tracePromise(builder, true);
   }
 
@@ -3264,12 +3062,13 @@ void CoroutineBase::destroy() {
   bool shouldRethrow = !unwindDetector.isUnwinding();
 
   do {
-    // Clang's implementation of Coroutines does not destroy the Coroutine object or deallocate the
-    // coroutine frame if a destructor of an object on the frame threw an exception. This is despite
-    // the fact that it delivered the exception to _us_ via unhandled_exception(). Anyway, it
-    // appears we can work around this by running coroutine.destroy() a second time.
+    // Clang's implementation of the Coroutines TS does not destroy the Coroutine object or
+    // deallocate the coroutine frame if a destructor of an object on the frame threw an
+    // exception. This is despite the fact that it delivered the exception to _us_ via
+    // unhandled_exception(). Anyway, it appears we can work around this by running
+    // coroutine.destroy() a second time.
     //
-    // On Clang, `disposalResults.exception != kj::none` implies `!disposalResults.destructorRan`.
+    // On Clang, `disposalResults.exception != nullptr` implies `!disposalResults.destructorRan`.
     // We could optimize out the separate `destructorRan` flag if we verify that other compilers
     // behave the same way.
     coroutine.destroy();
@@ -3277,9 +3076,9 @@ void CoroutineBase::destroy() {
 
   // WARNING: `this` is now a dangling pointer.
 
-  KJ_IF_SOME(exception, disposalResults.exception) {
+  KJ_IF_MAYBE(exception, disposalResults.exception) {
     if (shouldRethrow) {
-      kj::throwFatalException(kj::mv(exception));
+      kj::throwFatalException(kj::mv(*exception));
     } else {
       // An exception is already unwinding the stack, so throwing this secondary exception would
       // call std::terminate().
@@ -3287,13 +3086,13 @@ void CoroutineBase::destroy() {
   }
 }
 
-PromiseAwaiterBase::PromiseAwaiterBase(OwnPromiseNode&& node): node(kj::mv(node)) {}
-PromiseAwaiterBase::PromiseAwaiterBase(PromiseAwaiterBase&&) = default;
-PromiseAwaiterBase::~PromiseAwaiterBase() noexcept(false) {
+CoroutineBase::AwaiterBase::AwaiterBase(OwnPromiseNode node): node(kj::mv(node)) {}
+CoroutineBase::AwaiterBase::AwaiterBase(AwaiterBase&&) = default;
+CoroutineBase::AwaiterBase::~AwaiterBase() noexcept(false) {
   // Make sure it's safe to generate an async stack trace between now and when the Coroutine is
   // destroyed.
-  KJ_IF_SOME(coroutine, maybeCoroutine) {
-    coroutine.clearPromiseNodeForTrace();
+  KJ_IF_MAYBE(coroutineEvent, maybeCoroutineEvent) {
+    coroutineEvent->promiseNodeForTrace = nullptr;
   }
 
   unwindDetector.catchExceptionsIfUnwinding([this]() {
@@ -3302,47 +3101,42 @@ PromiseAwaiterBase::~PromiseAwaiterBase() noexcept(false) {
   });
 }
 
-void PromiseAwaiterBase::awaitResumeImpl(ExceptionOrValue& result, void* awaitedAt) {
-  KJ_IF_SOME(coroutine, maybeCoroutine) {
-    coroutine.clearPromiseNodeForTrace();
-  }
-
+void CoroutineBase::AwaiterBase::getImpl(ExceptionOrValue& result, void* awaitedAt) {
   node->get(result);
 
-  KJ_IF_SOME(exception, result.exception) {
+  KJ_IF_MAYBE(exception, result.exception) {
     // Manually extend the stack trace with the instruction address where the co_await occurred.
-    // Subtract 1 from the address to be consistent with `getStackTrace()` in `exception.c++` (see
-    // comment there).
-    exception.addTrace(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(awaitedAt) - 1));
+    exception->addTrace(awaitedAt);
 
-    // Pass kj::maxValue for ignoreCount here so that `throwFatalException()` doesn't try to
+    // Pass kj::maxValue for ignoreCount here so that `throwFatalException()` dosen't try to
     // extend the stack trace. There's no point in extending the trace beyond the single frame we
     // added above, as the rest of the trace will always be async framework stuff that no one wants
     // to see.
-    kj::throwFatalException(kj::mv(exception), kj::maxValue);
+    kj::throwFatalException(kj::mv(*exception), kj::maxValue);
   }
 }
 
-bool PromiseAwaiterBase::awaitSuspendImpl(CoroutineBase& coroutine) {
+bool CoroutineBase::AwaiterBase::awaitSuspendImpl(CoroutineBase& coroutineEvent) {
   node->setSelfPointer(&node);
-  node->onReady(&coroutine);
+  node->onReady(&coroutineEvent);
 
-  if (coroutine.canImmediatelyResume()) {
+  if (coroutineEvent.hasSuspendedAtLeastOnce && coroutineEvent.isNext()) {
     // The result is immediately ready and this coroutine is running on the event loop's stack, not
     // a user code stack. Let's cancel our event and immediately resume. It's important that we
     // don't perform this optimization if this is the first suspension, because our caller may
     // depend on running code before this promise's continuations fire.
-    coroutine.disarm();
+    coroutineEvent.disarm();
 
     // We can resume ourselves by returning false. This accomplishes the same thing as if we had
     // returned true from await_ready().
     return false;
   } else {
-    // Otherwise, we must suspend. Store a reference to the OwnPromiseNode we're waiting on for
-    // tracing purposes; await_resume() and/or ~PromiseAwaiterBase() will clear it using the
-    // CoroutineBase& reference we save.
-    coroutine.setPromiseNodeForTrace(node);
-    maybeCoroutine = coroutine;
+    // Otherwise, we must suspend. Store a reference to the promise we're waiting on for tracing
+    // purposes; coroutineEvent.fire() and/or ~Adapter() will null this out.
+    coroutineEvent.promiseNodeForTrace = *node;
+    maybeCoroutineEvent = coroutineEvent;
+
+    coroutineEvent.hasSuspendedAtLeastOnce = true;
 
     return true;
   }
@@ -3356,5 +3150,7 @@ void throwMultipleCoCaptureInvocations() {
 }
 
 }  // namespace _ (private)
+
+#endif  // KJ_HAS_COROUTINE
 
 }  // namespace kj

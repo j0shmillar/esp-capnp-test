@@ -28,6 +28,8 @@
 namespace kj {
 namespace {
 
+#ifdef KJ_HAS_COROUTINE
+
 template <typename T>
 Promise<kj::Decay<T>> identity(T&& value) {
   co_return kj::fwd<T>(value);
@@ -51,12 +53,7 @@ KJ_TEST("Identity coroutine") {
 
 template <typename T>
 Promise<T> simpleCoroutine(kj::Promise<T> result, kj::Promise<bool> dontThrow = true) {
-  // TODO(cleanup): Storing the coroutine result in a variable to work around
-  // https://developercommunity.visualstudio.com/t/certain-coroutines-cause-error-C7587:-/10311276,
-  // which caused a compile error here. This was supposed to be resolved with version 17.9, but
-  // appears to still be happening as of 17.9.6. Clean up once this has been fixed.
-  auto resolved = co_await dontThrow;
-  KJ_ASSERT(resolved);
+  KJ_ASSERT(co_await dontThrow);
   co_return co_await result;
 }
 
@@ -263,7 +260,7 @@ KJ_TEST("Coroutines can be canceled while suspended") {
 
   auto coro = [&](kj::Promise<int> promise) -> kj::Promise<void> {
     Counter counter1(wind, unwind);
-    co_await kj::yield();
+    co_await kj::evalLater([](){});
     Counter counter2(wind, unwind);
     co_await promise;
   };
@@ -291,7 +288,7 @@ KJ_TEST("Exceptions during suspended coroutine frame-unwind propagate via destru
   WaitScope waitScope(loop);
 
   auto exception = KJ_ASSERT_NONNULL(kj::runCatchingExceptions([&]() {
-    (void)deferredThrowCoroutine(kj::NEVER_DONE);
+    deferredThrowCoroutine(kj::NEVER_DONE);
   }));
 
   KJ_EXPECT(exception.getDescription() == "thrown during unwind");
@@ -381,9 +378,17 @@ KJ_TEST("co_await only sees coroutine destruction exceptions if promise was not 
       awaitPromise(kj::mv(rejectedThrowyDtorPromise)).wait(waitScope));
 }
 
-#if !_MSC_VER && !__aarch64__
+#if !_MSC_VER  && !__aarch64__
+uint countLines(StringPtr s) {
+  uint lines = 0;
+  for (char c: s) {
+    lines += c == '\n';
+  }
+  return lines;
+}
+
 // TODO(msvc): This test relies on GetFunctorStartAddress, which is not supported on MSVC currently,
-//   so skip the test. Note this is an ABI issue, so clang-cl is also not supported.
+//   so skip the test.
 // TODO(someday): Test is flakey on arm64, depending on how it's compiled. I haven't had a chance to
 //   investigate much, but noticed that it failed in a debug build, but passed in a local opt build.
 KJ_TEST("Can trace through coroutines") {
@@ -407,12 +412,11 @@ KJ_TEST("Can trace through coroutines") {
   // Get an async trace when the promise is fulfilled. We eagerlyEvaluate() to make sure the
   // continuation executes while the event loop is running.
   paf.promise = paf.promise.then([]() {
-    void* scratch[16];
-    auto trace = getAsyncTrace(scratch);
+    auto trace = getAsyncTrace();
     // We expect one entry for waitImpl(), one for the coroutine, and one for this continuation.
     // When building in debug mode with CMake, I observed this count can be 2. The missing frame is
     // probably this continuation. Let's just expect a range.
-    auto count = trace.size();
+    auto count = countLines(trace);
     KJ_EXPECT(0 < count && count <= 3);
   }).eagerlyEvaluate(nullptr);
 
@@ -421,12 +425,9 @@ KJ_TEST("Can trace through coroutines") {
   }();
 
   {
-    void* space[32]{};
-    _::TraceBuilder builder(space);
-    _::PromiseNode::from(coroPromise).tracePromise(builder, false);
-
+    auto trace = coroPromise.trace();
     // One for the Coroutine PromiseNode, one for paf.promise.
-    KJ_EXPECT(builder.finish().size() >= 2);
+    KJ_EXPECT(countLines(trace) >= 2);
   }
 
   paf.fulfiller->fulfill();
@@ -438,12 +439,12 @@ KJ_TEST("Can trace through coroutines") {
 Promise<void> sendData(Promise<Own<NetworkAddress>> addressPromise) {
   auto address = co_await addressPromise;
   auto client = co_await address->connect();
-  co_await client->write("foo"_kjb);
+  co_await client->write("foo", 3);
 }
 
 Promise<String> receiveDataCoroutine(Own<ConnectionReceiver> listener) {
   auto server = co_await listener->accept();
-  char buffer[4]{};
+  char buffer[4];
   auto n = co_await server->read(buffer, 3, 4);
   KJ_EXPECT(3u == n);
   co_return heapString(buffer, n);
@@ -570,6 +571,8 @@ KJ_TEST("Verify coCapture() with continuation functors") {
     KJ_REQUIRE(result == j);
   }
 }
+
+#endif  // KJ_HAS_COROUTINE
 
 }  // namespace
 }  // namespace kj

@@ -23,8 +23,12 @@
 
 #include "memory.h"
 
-#if _MSC_VER && !defined(__clang__)
-#include <intrin0.h> // _InterlockedXX
+#if _MSC_VER
+#if _MSC_VER < 1910
+#include <intrin.h>
+#else
+#include <intrin0.h>
+#endif
 #endif
 
 KJ_BEGIN_HEADER
@@ -33,12 +37,6 @@ namespace kj {
 
 // =======================================================================================
 // Non-atomic (thread-unsafe) refcounting
-
-template<typename T>
-class Rc;
-
-template<typename T>
-class EnableAddRefToThis;
 
 class Refcounted: private Disposer {
   // Subclass this to create a class that contains a reference count. Then, use
@@ -80,12 +78,8 @@ private:
   // "mutable" because disposeImpl() is const.  Bleh.
 
   void disposeImpl(void* pointer) const override;
-
   template <typename T>
   static Own<T> addRefInternal(T* object);
-
-  template <typename T>
-  static Rc<T> addRcRefInternal(T* object);
 
   template <typename T>
   friend Own<T> addRef(T& object);
@@ -94,15 +88,6 @@ private:
 
   template <typename T>
   friend class RefcountedWrapper;
-
-  template <typename T, typename... Params>
-  friend Rc<T> rc(Params&&... params);
-
-  template <typename T>
-  friend class Rc;
-
-  template <typename T>
-  friend class EnableAddRefToThis;
 };
 
 template <typename T, typename... Params>
@@ -111,14 +96,6 @@ inline Own<T> refcounted(Params&&... params) {
   // initial reference to the object.  More references can be created with `kj::addRef()`.
 
   return Refcounted::addRefInternal(new T(kj::fwd<Params>(params)...));
-}
-
-template <typename T, typename... Params>
-inline Rc<T> rc(Params&&... params) {
-  // Allocate a new refcounted instance of T, passing `params` to its constructor.
-  // Returns smart pointer that can be used to manage references.
-
-  return Refcounted::addRcRefInternal(new T(kj::fwd<Params>(params)...));
 }
 
 template <typename T>
@@ -137,114 +114,6 @@ Own<T> Refcounted::addRefInternal(T* object) {
   ++refcounted->refcount;
   return Own<T>(object, *refcounted);
 }
-
-template <typename T>
-Rc<T> Refcounted::addRcRefInternal(T* object) {
-  static_assert(kj::canConvert<T&, Refcounted&>());
-  Refcounted* refcounted = object;
-  ++refcounted->refcount;
-  return Rc<T>(object);
-}
-
-template<typename T>
-class Rc {
-  // Smart pointer for reference counted objects. 
-  //
-  // There are only three ways to obtain new Rc instances:
-  // - use kj::rc<T>(...) function to create new T.
-  // - use kj::Rc::addRef() and the existing Rc instance.
-  // - use EnableAddRefToThis to allow T instance to add new references to itself.
-  //
-  // Suggested usage patterns are:
-  // - return kj::Rc as value from factory functions: 
-  //     kj::Rc<MyService> createMyService();
-  // - pass kj::Rc as rvalue to functions that need to extend T's lifetime:
-  //     void setMyService(kj::Rc<MyService>&& service)
-  // - store kj::Rc as data member:
-  //     struct MyComputation { kj::Rc<MyService> service; };
-  // - use toOwn to convert kj::Rc<T> instance to kj::Own<T> and use it
-  //     without being concerned of reference counting behavior. 
-  //     To improve the transparency of the code, kj::Own<T> shouldn't be used 
-  //     to call addRef() without kj::Rc.
-
-public:
-  KJ_DISALLOW_COPY(Rc);
-  Rc() { }
-  Rc(decltype(nullptr)) { }
-  inline Rc(Rc&& other) noexcept = default;
-
-  template <typename U, typename = EnableIf<canConvert<U*, T*>()>>
-  inline Rc(Rc<U>&& other) noexcept : own(kj::mv(other.own)) { }
-
-  kj::Own<T> toOwn() {
-    // Convert Rc<T> to Own<T>.
-    // Nullifies the original Rc<T>.
-    return kj::mv(own);
-  }
-
-  kj::Rc<T> addRef() {
-    T* refcounted = own.get();
-    if (refcounted != nullptr) {
-      return Refcounted::addRcRefInternal(refcounted);
-    } else {
-      return kj::Rc<T>();
-    }
-  }
-
-  Rc& operator=(decltype(nullptr)) {
-    own = nullptr;
-    return *this;
-  }
-
-  Rc& operator=(Rc&& other) = default;
-
-  template <typename U>
-  Rc<U> downcast() {
-    return Rc<U>(own.template downcast<U>());
-  }
-
-  inline bool operator==(const Rc<T>& other) const { return own.get() == other.own.get(); }
-  inline bool operator==(decltype(nullptr)) const { return own.get() == nullptr; }
-  inline bool operator!=(decltype(nullptr)) const { return own.get() != nullptr; }
-
-  inline T* operator->() { return own.get(); }
-  inline const T* operator->() const { return own.get(); }
-
-  inline T* get() { return own.get(); }
-  inline const T* get() const { return own.get(); }
-
-private:
-  Rc(T* t) : own(t, *t) { }
-  Rc(Own<T>&& t) : own(kj::mv(t)) { }
-
-  Own<T> own;
-
-  friend class Refcounted;
-
-  template <typename>
-  friend class Rc;
-
-  template <typename>
-  friend class EnableAddRefToThis;
-};
-
-template<typename Self>
-class EnableAddRefToThis {
-  // Exposes addRefToThis member function for objects to add
-  // references to themselves.
-  // Can be used both with Refcounted and AtomicRefcounted objects.
-
-protected:
-  auto addRefToThis() const {
-    const Self* self = static_cast<const Self*>(this);
-    return Self::addRcRefInternal(self);
-  }
-
-  auto addRefToThis() {
-    Self* self = static_cast<Self*>(this);
-    return Self::addRcRefInternal(self);
-  }
-};
 
 template <typename T>
 class RefcountedWrapper: public Refcounted {
@@ -312,9 +181,6 @@ Own<RefcountedWrapper<Own<T>>> refcountedWrapper(Own<T>&& wrapped) {
 #endif
 #endif
 
-template<typename T>
-class Arc;
-
 class AtomicRefcounted: private kj::Disposer {
 public:
   AtomicRefcounted() = default;
@@ -352,29 +218,11 @@ private:
   friend kj::Maybe<kj::Own<const T>> atomicAddRefWeak(const T& object);
   template <typename T, typename... Params>
   friend kj::Own<T> atomicRefcounted(Params&&... params);
-
-  template <typename T>
-  static kj::Arc<T> addRcRefInternal(T* object);
-  template <typename T>
-  static kj::Arc<const T> addRcRefInternal(const T* object);
-
-  template <typename T>
-  friend class Arc;
-  template <typename T, typename... Params>
-  friend kj::Arc<T> arc(Params&&... params);
-
-  template <typename>
-  friend class EnableAddRefToThis;
 };
 
 template <typename T, typename... Params>
 inline kj::Own<T> atomicRefcounted(Params&&... params) {
   return AtomicRefcounted::addRefInternal(new T(kj::fwd<Params>(params)...));
-}
-
-template <typename T, typename... Params>
-inline kj::Arc<T> arc(Params&&... params) {
-  return AtomicRefcounted::addRcRefInternal(new T(kj::fwd<Params>(params)...));
 }
 
 template <typename T>
@@ -404,7 +252,7 @@ kj::Maybe<kj::Own<const T>> atomicAddRefWeak(const T& object) {
   if (refcounted->addRefWeakInternal()) {
     return kj::Own<const T>(&object, *refcounted);
   } else {
-    return kj::none;
+    return nullptr;
   }
 }
 
@@ -429,98 +277,6 @@ kj::Own<const T> AtomicRefcounted::addRefInternal(const T* object) {
 #endif
   return kj::Own<const T>(object, *refcounted);
 }
-
-template <typename T>
-kj::Arc<T> AtomicRefcounted::addRcRefInternal(T* object) {
-  static_assert(kj::canConvert<T&, AtomicRefcounted&>());
-  return kj::Arc<T>(addRefInternal(object));
-}
-
-template <typename T>
-kj::Arc<const T> AtomicRefcounted::addRcRefInternal(const T* object) {
-  static_assert(kj::canConvert<T&, AtomicRefcounted&>());
-  return kj::Arc<const T>(addRefInternal(object));
-}
-
-template<typename T>
-class Arc {
-  // Smart pointer for atomic reference counted objects. 
-  //
-  // Usage is similar to kj::Rc<T>.
-
-public:
-  KJ_DISALLOW_COPY(Arc);
-  Arc() { }
-  Arc(decltype(nullptr)) { }
-  inline Arc(Arc&& other) noexcept = default;
-
-  template <typename U, typename = EnableIf<canConvert<U*, T*>()>>
-  inline Arc(Arc<U>&& other) noexcept : own(kj::mv(other.own)) { }
-
-  kj::Own<T> toOwn() {
-    // Convert Arc<T> to Own<T>.
-    // Nullifies the original Arc<T>.
-    return kj::mv(own);
-  }
-
-  kj::Arc<T> addRef() {
-    T* refcounted = own.get();
-    if (refcounted != nullptr) {
-      return AtomicRefcounted::addRcRefInternal(refcounted);
-    } else {
-      return kj::Arc<T>();
-    }
-  }
-
-  // Surrenders ownership of the underlying object to the caller. Unlike Own<T>::disown(), there
-  // is no need for the caller to prove they know how to dispose of the object, because the object
-  // is its own Disposer.
-  T* disown() {
-    return own.disown(own.get());
-  }
-
-  // Assume ownership of an object without incrementing its refcount. Opposite of disown().
-  static Arc reown(T* ptr) {
-    return Arc(ptr);
-  }
-
-  Arc& operator=(decltype(nullptr)) {
-    own = nullptr;
-    return *this;
-  }
-
-  Arc& operator=(Arc&& other) = default;
-
-  template <typename U>
-  Arc<U> downcast() {
-    return Arc<U>(own.template downcast<U>());
-  }
-
-  inline bool operator==(const Arc<T>& other) const { return own.get() == other.own.get(); }
-  inline bool operator==(decltype(nullptr)) const { return own.get() == nullptr; }
-  inline bool operator!=(decltype(nullptr)) const { return own.get() != nullptr; }
-
-  inline T* operator->() { return own.get(); }
-  inline const T* operator->() const { return own.get(); }
-
-  inline T* get() { return own.get(); }
-  inline const T* get() const { return own.get(); }
-
-private:
-  Arc(T* t) : own(t, *t) { }
-  Arc(Own<T>&& t) : own(kj::mv(t)) { }
-
-  Own<T> own;
-
-  friend class AtomicRefcounted;
-
-  template <typename>
-  friend class Arc;
-
-  template <typename>
-  friend class EnableAddRefToThis;
-};
-
 
 }  // namespace kj
 

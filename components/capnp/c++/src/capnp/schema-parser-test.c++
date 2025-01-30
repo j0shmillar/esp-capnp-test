@@ -25,6 +25,7 @@
 #include <kj/compat/gtest.h>
 #include "test-util.h"
 #include <kj/debug.h>
+#include <map>
 
 namespace capnp {
 namespace {

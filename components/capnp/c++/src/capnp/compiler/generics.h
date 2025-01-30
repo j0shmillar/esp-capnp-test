@@ -21,10 +21,12 @@
 
 #pragma once
 
-#include <capnp/common.h>
-#include <kj/debug.h>
-#include <kj/refcount.h>
+#include <capnp/orphan.h>
+#include <capnp/compiler/grammar.capnp.h>
+#include <capnp/schema.capnp.h>
+#include <capnp/dynamic.h>
 #include <kj/vector.h>
+#include <kj/one-of.h>
 #include "error-reporter.h"
 #include "resolver.h"
 
@@ -139,17 +141,6 @@ public:
   kj::String toString();
   kj::String toDebugString();
 
-  kj::Maybe<uint64_t> getGenericTypeId() {
-    // If this declaration points to a type, gets its type ID. Keep in mind that this
-    // drops the brand, that is, if the type is the result of applying a generic to
-    // some type parameters, this returns only the ID of the underlying generic type,
-    // which loses information about the type parameters.
-    if (body.is<Resolver::ResolvedDecl>()) {
-      return body.get<Resolver::ResolvedDecl>().id;
-    }
-    return kj::none;
-  }
-
 private:
   Resolver::ResolveResult body;
   kj::Own<BrandScope> brand;  // null if parameter
@@ -254,8 +245,8 @@ private:
       : errorReporter(base.errorReporter),
         leafId(base.leafId), leafParamCount(base.leafParamCount),
         inherited(false), params(kj::mv(params)) {
-    KJ_IF_SOME(p, base.parent) {
-      parent = kj::addRef(*p);
+    KJ_IF_MAYBE(p, base.parent) {
+      parent = kj::addRef(**p);
     }
   }
   BrandScope(ErrorReporter& errorReporter, uint64_t scopeId)
@@ -288,8 +279,8 @@ void BrandScope::compile(InitBrandFunc&& initBrand) {
     if (ptr->params.size() > 0 || (ptr->inherited && ptr->leafParamCount > 0)) {
       levels.add(ptr);
     }
-    KJ_IF_SOME(p, ptr->parent) {
-      ptr = p;
+    KJ_IF_MAYBE(p, ptr->parent) {
+      ptr = *p;
     } else {
       break;
     }

@@ -388,6 +388,7 @@ public:
   OneOf& operator=(OneOf&& other) { if (tag != 0) destroy(); moveFrom(other); return *this; }
 
   inline bool operator==(decltype(nullptr)) const { return tag == 0; }
+  inline bool operator!=(decltype(nullptr)) const { return tag != 0; }
 
   template <typename T>
   bool is() const {
@@ -428,7 +429,7 @@ public:
     if (is<T>()) {
       return *reinterpret_cast<T*>(space);
     } else {
-      return kj::none;
+      return nullptr;
     }
   }
   template <typename T>
@@ -436,7 +437,7 @@ public:
     if (is<T>()) {
       return *reinterpret_cast<const T*>(space);
     } else {
-      return kj::none;
+      return nullptr;
     }
   }
 
@@ -603,8 +604,15 @@ void OneOf<Variants...>::allHandled() {
   KJ_UNREACHABLE;
 }
 
+#if KJ_CPP_STD > 201402L
 #define KJ_SWITCH_ONEOF(value) \
   switch (auto _kj_switch_subject = (value)._switchSubject(); _kj_switch_subject->which())
+#else
+#define KJ_SWITCH_ONEOF(value) \
+  /* Without C++17, we can only support one switch per containing block. Deal with it. */ \
+  auto _kj_switch_subject = (value)._switchSubject(); \
+  switch (_kj_switch_subject->which())
+#endif
 #if !_MSC_VER || defined(__clang__)
 #define KJ_CASE_ONEOF(name, ...) \
     break; \
@@ -645,42 +653,15 @@ void OneOf<Variants...>::allHandled() {
 //   compiler warning, just like a regular switch() over an enum where one of the enum values is
 //   missing.
 // - There's no need for a `break` statement in a KJ_CASE_ONEOF; it is implied.
+// - Under C++11 and C++14, only one KJ_SWITCH_ONEOF() can appear in a block. Wrap the switch in
+//   a pair of braces if you need a second switch in the same block. If C++17 is enabled, this is
+//   not an issue.
 //
 // Implementation notes:
 // - The use of __VA_ARGS__ is to account for template types that have commas separating type
 //   parameters, since macros don't recognize <> as grouping.
 // - _kj_switch_done is really used as a boolean flag to prevent the for() loop from actually
 //   looping, but it's defined as a pointer since that's all we can define in this context.
-
-namespace _ {
-
-// Helper that tries comparing a and b as type T, but only if a.is<T>().
-template <typename T, typename ...Variants>
-bool compareIfIs(const OneOf<Variants...>& a, const OneOf<Variants...>& b) {
-  if (a.template is<T>()) {
-    // We know a.which() == b.which(), so b is also T.
-    return a.template get<T>() == b.template get<T>();
-  } else {
-    return false;
-  }
-}
-
-}
-
-template <typename ...Variants>
-bool operator==(const OneOf<Variants...>& a, const OneOf<Variants...>& b) {
-  if (a == nullptr && b == nullptr) return true;
-  if ((a == nullptr) != (b == nullptr)) return false;
-
-  if (a.which() != b.which()) return false;
-
-  return (_::compareIfIs<Variants>(a, b) || ...);
-}
-
-template <typename ...Variants>
-bool operator!=(const OneOf<Variants...>& a, const OneOf<Variants...>& b) {
-  return !(a == b);
-}
 
 }  // namespace kj
 

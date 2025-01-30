@@ -1,12 +1,5 @@
-**THIS IS THE V2 DEVELOPMENT BRANCH**
-
-On this branch, we may make breaking changes to the API at any time. Do not use this branch if you want stability. If you want "1.0 plus bug fixes", use the `master` branch.
-
-For more, see the 1.0 release announcement:
-
-https://capnproto.org/news/2023-07-28-capnproto-1.0.html
-
-------------------------------------------------------------
+[![Quick Tests](https://github.com/capnproto/capnproto/workflows/Quick%20Tests/badge.svg?branch=master&event=push)](https://github.com/capnproto/capnproto/actions?query=workflow%3A%22Quick+Tests%22)
+[![Release Tests](https://github.com/capnproto/capnproto/workflows/Release%20Tests/badge.svg?branch=master&event=push)](https://github.com/capnproto/capnproto/actions?query=workflow%3A%22Release+Tests%22)
 
 <img src='http://kentonv.github.io/capnproto/images/infinity-times-faster.png' style='width:334px; height:306px; float: right;'>
 

@@ -24,7 +24,6 @@
 #include "memory.h"
 #include "array.h"
 #include "string.h"
-#include "vector.h"
 #include "windows-sanity.h"  // work-around macro conflict with `ERROR`
 
 KJ_BEGIN_HEADER
@@ -104,10 +103,10 @@ public:
   };
 
   inline Maybe<const Context&> getContext() const {
-    KJ_IF_SOME(c, context) {
-      return *c;
+    KJ_IF_MAYBE(c, context) {
+      return **c;
     } else {
-      return kj::none;
+      return nullptr;
     }
   }
 
@@ -134,30 +133,6 @@ public:
   KJ_NOINLINE void addTraceHere();
   // Adds the location that called this method to the stack trace.
 
-  using DetailTypeId = unsigned long long;
-  struct Detail {
-    DetailTypeId id;
-    kj::Array<byte> value;
-  };
-
-  kj::Maybe<kj::ArrayPtr<const byte>> getDetail(DetailTypeId typeId) const;
-  kj::ArrayPtr<const Detail> getDetails() const;
-  void setDetail(DetailTypeId typeId, kj::Array<byte> value);
-  kj::Maybe<kj::Array<byte>> releaseDetail(DetailTypeId typeId);
-  // Details: Arbitrary extra information can be added to an exception. Applications can define
-  // any kind of detail they want, but it must be serializable to bytes so that it can be logged
-  // and transmitted over RPC.
-  //
-  // Every type of detail must have a unique ID, which is a 64-bit integer. It's suggested that
-  // you use `capnp id` to generate these.
-  //
-  // It is expected that exceptions will rarely have more than one or two details, so the
-  // implementation uses a flat array with O(n) lookup.
-  //
-  // The main use case for details is to be able to tunnel exceptions of a different type through
-  // KJ / Cap'n Proto. In particular, Cloudflare Workers commonly has to convert a JavaScript
-  // exception to KJ and back. The exception is serialized using V8 serialization.
-
 private:
   String ownFile;
   const char* file;
@@ -181,8 +156,6 @@ private:
   // and truncateCommonTrace() after it is caught. Note that when exceptions propagate through
   // async promises, the trace is extended one frame at a time instead, so isFullTrace should
   // remain false.
-
-  kj::Vector<Detail> details;
 
   friend class ExceptionImpl;
 };
@@ -235,15 +208,16 @@ public:
   // producing garbage output.  This method _should_ throw the exception, but is allowed to simply
   // return if garbage output is acceptable.
   //
-  // The global default implementation throws an exception, unless we're currently in a destructor
-  // unwinding due to another exception being thrown, in which case it logs an error and returns.
+  // The global default implementation throws an exception unless the library was compiled with
+  // -fno-exceptions, in which case it logs an error and returns.
 
   virtual void onFatalException(Exception&& exception);
   // Called when an exception has been raised and the calling code cannot continue.  If this method
   // returns normally, abort() will be called.  The method must throw the exception to avoid
   // aborting.
   //
-  // The global default implementation throws an exception.
+  // The global default implementation throws an exception unless the library was compiled with
+  // -fno-exceptions, in which case it logs an error and returns.
 
   virtual void logMessage(LogSeverity severity, const char* file, int line, int contextDepth,
                           String&& text);
@@ -298,15 +272,10 @@ ExceptionCallback& getExceptionCallback();
 KJ_NOINLINE KJ_NORETURN(void throwFatalException(kj::Exception&& exception, uint ignoreCount = 0));
 // Invoke the exception callback to throw the given fatal exception.  If the exception callback
 // returns, abort.
-//
-// TODO(2.0): Rename this to `throwException()`.
 
 KJ_NOINLINE void throwRecoverableException(kj::Exception&& exception, uint ignoreCount = 0);
 // Invoke the exception callback to throw the given recoverable exception.  If the exception
 // callback returns, return normally.
-//
-// TODO(2.0): Rename this to `throwExceptionUnlessUnwinding()`. (Or, can we fix the unwind problem
-//   and be able to remove this entirely?)
 
 // =======================================================================================
 
@@ -318,8 +287,10 @@ Maybe<Exception> runCatchingExceptions(Func&& func);
 // are thrown.  Returns the Exception if there was one, or null if the operation completed normally.
 // Non-KJ exceptions will be wrapped.
 //
-// TODO(2.0): Remove this. Introduce KJ_CATCH() macro which uses getCaughtExceptionAsKj() to handle
-//   exception coercion and stack trace management. Then use try/KJ_CATCH everywhere.
+// If exception are disabled (e.g. with -fno-exceptions), this will still detect whether any
+// recoverable exceptions occurred while running the function and will return those.
+
+#if !KJ_NO_EXCEPTIONS
 
 kj::Exception getCaughtExceptionAsKj();
 // Call from the catch block of a try/catch to get a `kj::Exception` representing the exception
@@ -330,6 +301,8 @@ kj::Exception getCaughtExceptionAsKj();
 // Some exception types will actually be rethrown by this function, rather than returned. The most
 // common example is `CanceledException`, whose purpose is to unwind the stack and is not meant to
 // be caught.
+
+#endif  // !KJ_NO_EXCEPTIONS
 
 class UnwindDetector {
   // Utility for detecting when a destructor is called due to unwind.  Useful for:
@@ -357,21 +330,58 @@ public:
 private:
   uint uncaughtCount;
 
+#if !KJ_NO_EXCEPTIONS
   void catchThrownExceptionAsSecondaryFault() const;
+#endif
+};
+
+#if KJ_NO_EXCEPTIONS
+
+namespace _ {  // private
+
+class Runnable {
+public:
+  virtual void run() = 0;
 };
 
 template <typename Func>
+class RunnableImpl: public Runnable {
+public:
+  RunnableImpl(Func&& func): func(kj::fwd<Func>(func)) {}
+  void run() override {
+    func();
+  }
+private:
+  Func func;
+};
+
+Maybe<Exception> runCatchingExceptions(Runnable& runnable);
+
+}  // namespace _ (private)
+
+#endif  // KJ_NO_EXCEPTIONS
+
+template <typename Func>
 Maybe<Exception> runCatchingExceptions(Func&& func) {
+#if KJ_NO_EXCEPTIONS
+  _::RunnableImpl<Func> runnable(kj::fwd<Func>(func));
+  return _::runCatchingExceptions(runnable);
+#else
   try {
     func();
-    return kj::none;
+    return nullptr;
   } catch (...) {
     return getCaughtExceptionAsKj();
   }
+#endif
 }
 
 template <typename Func>
 void UnwindDetector::catchExceptionsIfUnwinding(Func&& func) const {
+#if KJ_NO_EXCEPTIONS
+  // Can't possibly be unwinding...
+  func();
+#else
   if (isUnwinding()) {
     try {
       func();
@@ -381,6 +391,7 @@ void UnwindDetector::catchExceptionsIfUnwinding(Func&& func) const {
   } else {
     func();
   }
+#endif
 }
 
 #define KJ_ON_SCOPE_SUCCESS(code) \
@@ -442,6 +453,8 @@ kj::String getCaughtExceptionType();
 // for the purpose of error logging. This function is best-effort; on some platforms it may simply
 // return "(unknown)".
 
+#if !KJ_NO_EXCEPTIONS
+
 class InFlightExceptionIterator {
   // A class that can be used to iterate over exceptions that are in-flight in the current thread,
   // meaning they are either uncaught, or caught by a catch block that is current executing.
@@ -462,6 +475,8 @@ public:
 private:
   const Exception* ptr;
 };
+
+#endif  // !KJ_NO_EXCEPTIONS
 
 kj::Exception getDestructionReason(void* traceSeparator,
     kj::Exception::Type defaultType, const char* defaultFile, int defaultLine,

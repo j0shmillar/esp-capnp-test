@@ -192,12 +192,12 @@ public:
       KJ_CASE_ONEOF(streaming, Streaming) {
         if (completed + data.size() < limit) {
           completed += data.size();
-          return streaming.stream.write(data);
+          return streaming.stream.write(data.begin(), data.size());
         } else {
           // This write passes the limit.
           uint64_t remainder = limit - completed;
-          auto leftover = data.slice(remainder);
-          return streaming.stream.write(data.first(remainder))
+          auto leftover = data.slice(remainder, data.size());
+          return streaming.stream.write(data.begin(), remainder)
               .then([this, leftover]() -> kj::Promise<void> {
             completed = limit;
             limitReached();
@@ -394,13 +394,6 @@ public:
         state = Ended();
       }
       KJ_CASE_ONEOF(kjStream, kj::Own<kj::AsyncOutputStream>) {
-        KJ_IF_SOME(expEnd, kj::dynamicDowncastIfAvailable<ExplicitEndOutputStream>(*kjStream)) {
-          // Ugh, we somehow ended up with a non-explicit-end stream forwarding to an explicit-end
-          // stream, so we have to detach the end() call.
-          auto promise = expEnd.end();
-          promise.detach([stream = kj::mv(kjStream)](kj::Exception&&){});
-        }
-
         state = Ended();
       }
       KJ_CASE_ONEOF(capnpStream, capnp::ByteStream::Client) {
@@ -419,21 +412,12 @@ public:
   kj::Promise<void> directExplicitEnd() override {
     KJ_SWITCH_ONEOF(state) {
       KJ_CASE_ONEOF(prober, kj::Own<PathProber>) {
-        return prober->whenReady().then([this]() mutable {
-          KJ_ASSERT(!state.is<kj::Own<PathProber>>());
-          return directExplicitEnd();
-        });
+        state = Ended();
+        return kj::READY_NOW;
       }
       KJ_CASE_ONEOF(kjStream, kj::Own<kj::AsyncOutputStream>) {
-        KJ_IF_SOME(expEnd, kj::dynamicDowncastIfAvailable<ExplicitEndOutputStream>(*kjStream)) {
-          auto promise = expEnd.end();
-          promise = promise.attach(kj::mv(kjStream));
-          state = Ended();
-          return promise;
-        } else {
-          state = Ended();
-          return kj::READY_NOW;
-        }
+        state = Ended();
+        return kj::READY_NOW;
       }
       KJ_CASE_ONEOF(capnpStream, capnp::ByteStream::Client) {
         // Ugh I guess we need to send a real end() request here.
@@ -468,7 +452,7 @@ public:
     }
 
     void setNewParent(CapnpToKjStreamAdapter& newParent) {
-      KJ_ASSERT(parent == kj::none);
+      KJ_ASSERT(parent == nullptr);
       parent = newParent;
       auto paf = kj::newPromiseAndFulfiller<void>();
       readyPromise = paf.promise.fork();
@@ -483,22 +467,22 @@ public:
       // If our probe succeeds in finding a KjToCapnpStreamAdapter somewhere down the stack, that
       // will call this method to provide the shortened path.
 
-      KJ_IF_SOME(currentParent, parent) {
-        parent = kj::none;
+      KJ_IF_MAYBE(currentParent, parent) {
+        parent = nullptr;
 
-        auto self = kj::mv(currentParent.state.get<kj::Own<PathProber>>());
-        currentParent.state = Ended();  // temporary, we'll set this properly below
+        auto self = kj::mv(currentParent->state.get<kj::Own<PathProber>>());
+        currentParent->state = Ended();  // temporary, we'll set this properly below
         KJ_ASSERT(self.get() == this);
 
         // Open a substream on the target stream.
         auto req = target.getSubstreamRequest();
         req.setLimit(limit);
         auto paf = kj::newPromiseAndFulfiller<uint64_t>();
-        req.setCallback(kj::heap<SubstreamCallbackImpl>(currentParent.factory,
+        req.setCallback(kj::heap<SubstreamCallbackImpl>(currentParent->factory,
             kj::mv(self), kj::mv(paf.fulfiller), limit));
 
         // Now we hook up the incoming stream adapter to point directly to this substream, yay.
-        currentParent.state = req.send().getSubstream();
+        currentParent->state = req.send().getSubstream();
 
         // Let the original CapnpToKjStreamAdapter know that it's safe to handle incoming requests.
         readyFulfiller->fulfill();
@@ -527,10 +511,10 @@ public:
     kj::Promise<uint64_t> pumpTo(kj::AsyncOutputStream& output, uint64_t amount) override {
       // Call the stream's `tryPumpFrom()` as a way to discover where the data will eventually go,
       // in hopes that we find we can shorten the path.
-      KJ_IF_SOME(promise, output.tryPumpFrom(*this, amount)) {
+      KJ_IF_MAYBE(promise, output.tryPumpFrom(*this, amount)) {
         // tryPumpFrom() returned non-null. Either it called `tryRead()` or `pumpTo()` (see
         // below), or it plans to do so in the future.
-        return kj::mv(promise);
+        return kj::mv(*promise);
       } else {
         // There is no shorter path. As with tryRead(), we pretend we get immediate EOF.
         return kj::constPromise<uint64_t, 0>();
@@ -550,8 +534,8 @@ public:
       return kj::evalNow([&]() -> kj::Promise<uint64_t> {
         return pumpTo(*inner, kj::maxValue);
       }).then([this](uint64_t actual) {
-        KJ_IF_SOME(currentParent, parent) {
-          KJ_IF_SOME(prober, currentParent.state.tryGet<kj::Own<PathProber>>()) {
+        KJ_IF_MAYBE(currentParent, parent) {
+          KJ_IF_MAYBE(prober, currentParent->state.tryGet<kj::Own<PathProber>>()) {
             // Either we didn't find any shorter path at all during probing and faked an EOF
             // to get out of the probe (see comments in tryRead(), or we DID find a shorter path,
             // completed a pumpTo() using a substream, and that substream redirected back to us,
@@ -560,11 +544,11 @@ public:
             // HACK: If we overwrite the Probing state now, we'll delete ourselves and delete
             //   this task promise, which is an error... let the event loop do it later by
             //   detaching.
-            task.attach(kj::mv(prober)).detach([](kj::Exception&&){});
-            parent = kj::none;
+            task.attach(kj::mv(*prober)).detach([](kj::Exception&&){});
+            parent = nullptr;
 
             // OK, now we can change the parent state and signal it to proceed.
-            currentParent.state = kj::mv(inner);
+            currentParent->state = kj::mv(inner);
             readyFulfiller->fulfill();
           }
         }
@@ -622,7 +606,7 @@ protected:
       }
       KJ_CASE_ONEOF(kjStream, kj::Own<kj::AsyncOutputStream>) {
         auto data = context.getParams().getBytes();
-        return kjStream->write(data);
+        return kjStream->write(data.begin(), data.size());
       }
       KJ_CASE_ONEOF(capnpStream, capnp::ByteStream::Client) {
         auto params = context.getParams();
@@ -655,17 +639,10 @@ protected:
         });
       }
       KJ_CASE_ONEOF(kjStream, kj::Own<kj::AsyncOutputStream>) {
-        KJ_IF_SOME(expEnd, kj::dynamicDowncastIfAvailable<ExplicitEndOutputStream>(*kjStream)) {
-          auto promise = expEnd.end();
-          promise = promise.attach(kj::mv(kjStream));
-          state = Ended();
-          return promise;
-        } else {
-          // TODO(someday): When KJ adds a proper .end() call, use it here. For now, we must
-          //   drop the stream to close it.
-          state = Ended();
-          return kj::READY_NOW;
-        }
+        // TODO(someday): When KJ adds a proper .end() call, use it here. For now, we must
+        //   drop the stream to close it.
+        state = Ended();
+        return kj::READY_NOW;
       }
       KJ_CASE_ONEOF(capnpStream, capnp::ByteStream::Client) {
         auto params = context.getParams();
@@ -686,16 +663,16 @@ protected:
 
   kj::Promise<void> startTls(StartTlsContext context) override {
     auto params = context.getParams();
-    KJ_IF_SOME(s, tlsStarter) {
+    KJ_IF_MAYBE(s, tlsStarter) {
       KJ_SWITCH_ONEOF(state) {
         KJ_CASE_ONEOF(prober, kj::Own<PathProber>) {
-          return KJ_ASSERT_NONNULL(*s)(params.getExpectedServerHostname());
+          return KJ_ASSERT_NONNULL(*s->get())(params.getExpectedServerHostname());
         }
         KJ_CASE_ONEOF(kjStream, kj::Own<kj::AsyncOutputStream>) {
-          return KJ_ASSERT_NONNULL(*s)(params.getExpectedServerHostname());
+          return KJ_ASSERT_NONNULL(*s->get())(params.getExpectedServerHostname());
         }
         KJ_CASE_ONEOF(capnpStream, capnp::ByteStream::Client) {
-          return KJ_ASSERT_NONNULL(*s)(params.getExpectedServerHostname());
+          return KJ_ASSERT_NONNULL(*s->get())(params.getExpectedServerHostname());
         }
         KJ_CASE_ONEOF(e, Ended) {
           KJ_FAIL_REQUIRE("cannot call startTls on a bytestream that was ended");
@@ -787,13 +764,7 @@ private:
       originalPumpfulfiller->fulfill(context.getParams().getByteCount());
 
       // Give the original pump task a chance to finish up.
-      co_await pathProber->task;
-
-      // If the PathProber originally wrapped a stream with an end() method, we need to call that
-      // now.
-      KJ_IF_SOME(ee, kj::dynamicDowncastIfAvailable<ExplicitEndOutputStream>(*pathProber->inner)) {
-        co_await ee.end();
-      }
+      return pathProber->task.attach(kj::mv(pathProber));
     }
 
     kj::Promise<void> reachedLimit(ReachedLimitContext context) override {
@@ -839,8 +810,8 @@ public:
       //   use a detached promise for now, which is probably OK since capabilities are refcounted and
       //   asynchronously destroyed anyway.
       // TODO(cleanup): Fix this when KJ streads add an explicit end() method.
-      KJ_IF_SOME(o, optimized) {
-        o.directEnd();
+      KJ_IF_MAYBE(o, optimized) {
+        o->directEnd();
       } else {
         inner.endRequest(MessageSize {2, 0}).send().detach([](kj::Exception&&){});
       }
@@ -848,54 +819,50 @@ public:
   }
 
   kj::Promise<void> end() override {
-    if (!explicitEnd) {
-      // It would seem someone calling us did a dynamic downcast and discovered that we are an
-      // ExplicitEndOutputStream, and then they decided to call end(). That's cool! We'll allow
-      // it.
-      explicitEnd = true;
-    }
+    KJ_REQUIRE(explicitEnd, "not expecting explicit end");
 
-    KJ_IF_SOME(o, optimized) {
-      return o.directExplicitEnd();
+    KJ_IF_MAYBE(o, optimized) {
+      return o->directExplicitEnd();
     } else {
       return inner.endRequest(MessageSize {2, 0}).send().ignoreResult();
     }
   }
 
-  kj::Promise<void> write(kj::ArrayPtr<const byte> buffer) override {
+  kj::Promise<void> write(const void* buffer, size_t size) override {
     KJ_SWITCH_ONEOF(getShortestPath()) {
       KJ_CASE_ONEOF(promise, kj::Promise<void>) {
-        return promise.then([this,buffer]() {
-          return write(buffer);
+        return promise.then([this,buffer,size]() {
+          return write(buffer, size);
         });
       }
       KJ_CASE_ONEOF(kjStream, StreamServerBase::BorrowedStream) {
         auto limit = kj::min(kjStream.limit, MAX_BYTES_PER_WRITE);
-        if (buffer.size() <= limit) {
-          auto promise = kjStream.stream.write(buffer);
-          auto size = buffer.size();
+        if (size <= limit) {
+          auto promise = kjStream.stream.write(buffer, size);
           return promise.then([kjStream,size]() mutable {
             kjStream.lender.returnStream(size);
           });
         } else {
-          auto promise = kjStream.stream.write(buffer.first(limit));
-          return promise.then([this,kjStream,buffer,limit]() mutable {
+          auto promise = kjStream.stream.write(buffer, limit);
+          return promise.then([this,kjStream,buffer,size,limit]() mutable {
             kjStream.lender.returnStream(limit);
-            return write(buffer.slice(limit));
+            return write(reinterpret_cast<const byte*>(buffer) + limit,
+                         size - limit);
           });
         }
       }
       KJ_CASE_ONEOF(capnpStream, capnp::ByteStream::Client*) {
-        if (buffer.size() <= MAX_BYTES_PER_WRITE) {
-          auto req = capnpStream->writeRequest(MessageSize { 8 + buffer.size() / sizeof(word), 0 });
-          req.setBytes(buffer);
+        if (size <= MAX_BYTES_PER_WRITE) {
+          auto req = capnpStream->writeRequest(MessageSize { 8 + size / sizeof(word), 0 });
+          req.setBytes(kj::arrayPtr(reinterpret_cast<const byte*>(buffer), size));
           return req.send();
         } else {
           auto req = capnpStream->writeRequest(
               MessageSize { 8 + MAX_BYTES_PER_WRITE / sizeof(word), 0 });
-          req.setBytes(buffer.first(MAX_BYTES_PER_WRITE));
-          return req.send().then([this,buffer]() mutable {
-            return write(buffer.slice(MAX_BYTES_PER_WRITE));
+          req.setBytes(kj::arrayPtr(reinterpret_cast<const byte*>(buffer), MAX_BYTES_PER_WRITE));
+          return req.send().then([this,buffer,size]() mutable {
+            return write(reinterpret_cast<const byte*>(buffer) + MAX_BYTES_PER_WRITE,
+                         size - MAX_BYTES_PER_WRITE);
           });
         }
       }
@@ -959,11 +926,11 @@ public:
 
   kj::Maybe<kj::Promise<uint64_t>> tryPumpFrom(
       kj::AsyncInputStream& input, uint64_t amount = kj::maxValue) override {
-    KJ_IF_SOME(rpc, kj::dynamicDowncastIfAvailable<CapnpToKjStreamAdapter::PathProber>(input)) {
+    KJ_IF_MAYBE(rpc, kj::dynamicDowncastIfAvailable<CapnpToKjStreamAdapter::PathProber>(input)) {
       // Oh interesting, it turns we're hosting an incoming ByteStream which is pumping to this
       // outgoing ByteStream. We can let the Cap'n Proto RPC layer know that it can shorten the
       // path from one to the other.
-      return rpc.pumpToShorterPath(inner, amount);
+      return rpc->pumpToShorterPath(inner, amount);
     } else {
       return pumpLoop(input, 0, amount);
     }
@@ -992,10 +959,10 @@ private:
     // Also, implement whenWriteDisconnected() based on this.
     return factory.streamSet.getLocalServer(capnpClient)
         .then([this](kj::Maybe<capnp::ByteStream::Server&> server) -> kj::Promise<void> {
-      KJ_IF_SOME(s, server) {
+      KJ_IF_MAYBE(s, server) {
         // Yay, we discovered that the ByteStream actually points back to a local KJ stream.
         // We can use this to shorten the path by skipping the RPC machinery.
-        return findShorterPath(kj::downcast<StreamServerBase>(s));
+        return findShorterPath(kj::downcast<StreamServerBase>(*s));
       } else {
         // The capability is fully-resolved. This suggests that the remote implementation is
         // NOT a CapnpToKjStreamAdapter at all, because CapnpToKjStreamAdapter is designed to
@@ -1051,8 +1018,8 @@ private:
   }
 
   StreamServerBase::ShortestPath getShortestPath() {
-    KJ_IF_SOME(o, optimized) {
-      return o.getShortestPath();
+    KJ_IF_MAYBE(o, optimized) {
+      return o->getShortestPath();
     } else {
       return &inner;
     }
@@ -1096,7 +1063,7 @@ private:
         // Pumping from some other kind of stream. Optimize the pump by reading from the input
         // directly into outgoing RPC messages.
         size_t size = kj::min(remaining, 8192);
-        auto req = capnpStream->writeRequest(MessageSize { 8 + size / sizeof(word), 0 });
+        auto req = capnpStream->writeRequest(MessageSize { 8 + size / sizeof(word) });
 
         auto orphanage = Orphanage::getForMessageContaining(
             capnp::ByteStream::WriteParams::Builder(req));
@@ -1146,7 +1113,7 @@ private:
     if (splitByte == 0) {
       // Oh thank god, the split is between two pieces.
       auto rest = pieces.slice(splitPiece, pieces.size());
-      return writeFirstPieces(pieces.first(splitPiece))
+      return writeFirstPieces(pieces.slice(0, splitPiece))
           .then([this,rest]() mutable {
         return write(rest);
       });
@@ -1160,7 +1127,7 @@ private:
       for (auto i: kj::zeroTo(right.size())) {
         right[i] = pieces[splitPiece + i];
       }
-      left.back() = pieces[splitPiece].first(splitByte);
+      left.back() = pieces[splitPiece].slice(0, splitByte);
       right.front() = pieces[splitPiece].slice(splitByte, pieces[splitPiece].size());
 
       return writeFirstPieces(left).attach(kj::mv(left))

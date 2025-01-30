@@ -151,7 +151,6 @@ includekj_HEADERS =                                            \
   src/kj/vector.h                                              \
   src/kj/string.h                                              \
   src/kj/string-tree.h                                         \
-  src/kj/glob-filter.h                                         \
   src/kj/hash.h                                                \
   src/kj/table.h                                               \
   src/kj/map.h                                                 \
@@ -166,6 +165,7 @@ includekj_HEADERS =                                            \
   src/kj/mutex.h                                               \
   src/kj/source-location.h                                     \
   src/kj/thread.h                                              \
+  src/kj/threadlocal.h                                         \
   src/kj/filesystem.h                                          \
   src/kj/async-prelude.h                                       \
   src/kj/async.h                                               \
@@ -229,7 +229,8 @@ includecapnp_HEADERS =                                         \
   src/capnp/rpc-twoparty.h                                     \
   src/capnp/rpc.capnp.h                                        \
   src/capnp/rpc-twoparty.capnp.h                               \
-  src/capnp/persistent.capnp.h
+  src/capnp/persistent.capnp.h                                 \
+  src/capnp/ez-rpc.h
 
 includecapnpcompat_HEADERS =                                   \
   src/capnp/compat/json.h                                      \
@@ -275,7 +276,6 @@ libkj_la_SOURCES=                                              \
   src/kj/string.c++                                            \
   src/kj/string-tree.c++                                       \
   src/kj/source-location.c++                                   \
-  src/kj/glob-filter.c++                                       \
   src/kj/hash.c++                                              \
   src/kj/table.c++                                             \
   src/kj/encoding.c++                                          \
@@ -374,7 +374,8 @@ libcapnp_rpc_la_SOURCES=                                       \
   src/capnp/rpc.capnp.c++                                      \
   src/capnp/rpc-twoparty.c++                                   \
   src/capnp/rpc-twoparty.capnp.c++                             \
-  src/capnp/persistent.capnp.c++
+  src/capnp/persistent.capnp.c++                               \
+  src/capnp/ez-rpc.c++
 
 libcapnp_json_la_LIBADD = libcapnp.la libkj.la $(PTHREAD_LIBS)
 libcapnp_json_la_LDFLAGS = -release $(SO_VERSION) -no-undefined
@@ -541,6 +542,7 @@ heavy_tests =                                                  \
   src/capnp/serialize-text-test.c++                            \
   src/capnp/rpc-test.c++                                       \
   src/capnp/rpc-twoparty-test.c++                              \
+  src/capnp/ez-rpc-test.c++                                    \
   src/capnp/compat/json-test.c++                               \
   src/capnp/compat/websocket-rpc-test.c++                      \
   src/capnp/compiler/lexer-test.c++                            \
@@ -585,10 +587,10 @@ capnp_test_SOURCES =                                           \
   src/kj/io-test.c++                                           \
   src/kj/mutex-test.c++                                        \
   src/kj/time-test.c++                                         \
+  src/kj/threadlocal-test.c++                                  \
   src/kj/filesystem-test.c++                                   \
   src/kj/filesystem-disk-test.c++                              \
   src/kj/test-test.c++                                         \
-  src/kj/glob-filter-test.c++                                  \
   src/capnp/common-test.c++                                    \
   src/capnp/blob-test.c++                                      \
   src/capnp/endian-test.c++                                    \

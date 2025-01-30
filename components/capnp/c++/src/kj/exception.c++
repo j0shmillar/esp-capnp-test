@@ -37,6 +37,7 @@
 #include "exception.h"
 #include "string.h"
 #include "debug.h"
+#include "threadlocal.h"
 #include "miniposix.h"
 #include "function.h"
 #include "main.h"
@@ -80,11 +81,10 @@
 
 #if KJ_HAS_LIBDL
 #include "dlfcn.h"
-#include <sys/wait.h>
 #endif
 
 #if _MSC_VER
-#include <intrin.h>  // _ReturnAddress
+#include <intrin.h>
 #endif
 
 #if KJ_HAS_COMPILER_FEATURE(address_sanitizer) || defined(__SANITIZE_ADDRESS__)
@@ -227,164 +227,6 @@ ArrayPtr<void* const> getStackTrace(ArrayPtr<void*> space, uint ignoreCount,
 }  // namespace
 #endif
 
-#if KJ_HAS_LIBDL
-
-namespace {
-
-struct PipePair {
-  kj::OwnFd readEnd;
-  kj::OwnFd writeEnd;
-};
-
-PipePair raiiPipe() {
-  int fds[2];
-  KJ_SYSCALL(pipe(fds));
-  return PipePair { OwnFd(fds[0]), OwnFd(fds[1]) };
-}
-
-// A simple subprocess wrapper with in/out pipes.
-struct Subprocess {
-  // Execute command with a shell.
-  static kj::Maybe<Subprocess> exec(const char* argv[]) noexcept {
-    // Since this is used during error handling we do not to try to free resources in
-    // case of errors.
-
-    auto in = raiiPipe();
-    auto out = raiiPipe();
-
-    pid_t pid;
-    KJ_SYSCALL(pid = fork());
-    if (pid > 0) {
-      // parent
-      return Subprocess({ .pid = pid, .in = kj::mv(in.writeEnd), .out = kj::mv(out.readEnd) });
-    } else {
-      // child
-      in.writeEnd = nullptr;
-      out.readEnd = nullptr;
-
-      // redirect stdin & stdout
-      KJ_SYSCALL(dup2(in.readEnd, 0));
-      KJ_SYSCALL(dup2(out.writeEnd, 1));
-
-      KJ_SYSCALL_HANDLE_ERRORS(execvp(argv[0], const_cast<char**>(argv))) {
-        case ENOENT:
-          _exit(2);
-        default:
-          KJ_FAIL_SYSCALL("execvp", error);
-      }
-      KJ_UNREACHABLE;
-    }
-  }
-
-  int wait() {
-    int status;
-    KJ_SYSCALL(waitpid(pid, &status, 0));
-    return status;
-  }
-
-  pid_t pid;
-  kj::OwnFd in;
-  kj::OwnFd out;
-};
-
-String stringifyStackTraceWithLlvm(ArrayPtr<void* const> trace) {
-  const char* llvmSymbolizer = getenv("LLVM_SYMBOLIZER");
-  if (llvmSymbolizer == nullptr) {
-    llvmSymbolizer = "llvm-symbolizer";
-  }
-
-  const char* argv[] = {
-    llvmSymbolizer,
-    "--relativenames",
-    nullptr
-  };
-
-  bool disableSigpipeOnce KJ_UNUSED = []() {
-    // Just in case for some reason SIGPIPE is not already disabled in this process, disable it
-    // now, otherwise the below will fail in the case that llvm-symbolizer is not found. Note
-    // that if the process creates a kj::UnixEventPort, then SIGPIPE will already be disabled.
-    signal(SIGPIPE, SIG_IGN);
-    return false;
-  }();
-
-  try {
-    KJ_IF_SOME(subprocess, Subprocess::exec(argv)) {
-      // write addresses as "CODE <file_name> <hex_address>" lines.
-      auto addrs = strArray(KJ_MAP(addr, trace) {
-        Dl_info info;
-        if (dladdr(addr, &info)) {
-          uintptr_t offset = reinterpret_cast<uintptr_t>(addr) -
-                              reinterpret_cast<uintptr_t>(info.dli_fbase);
-          return kj::str("CODE ", info.dli_fname, " 0x", reinterpret_cast<void*>(offset));
-        } else {
-          return kj::str("CODE 0x", reinterpret_cast<void*>(addr));
-        }
-      }, "\n");
-      if (write(subprocess.in, addrs.cStr(), addrs.size()) != addrs.size()) {
-        // Ignore EPIPE, which means the process exited early. We'll deal with it below, presumably.
-        if (errno != EPIPE) {
-          KJ_LOG(ERROR, "write error", strerror(errno));
-          return nullptr;
-        }
-      }
-      subprocess.in = nullptr;
-
-      // read result
-      // Note that fdopen() takes ownership of the FD and will close it later.
-      auto out = fdopen(subprocess.out.release(), "r");
-      if (!out) {
-        KJ_LOG(ERROR, "fdopen error", strerror(errno));
-        return nullptr;
-      }
-      KJ_DEFER(fclose(out));
-
-      kj::String lines[256];
-      size_t i = 0;
-      for (char line[512]{}; fgets(line, sizeof(line), out) != nullptr;) {
-        if (i < kj::size(lines)) {
-          lines[i++] = kj::str(line);
-        }
-      }
-      int status = subprocess.wait();
-      if (WIFEXITED(status)) {
-        if (WEXITSTATUS(status) != 0) {
-          if (WEXITSTATUS(status) == 2) {
-            static bool logged = false;
-            if (!logged) {
-              KJ_LOG(WARNING, kj::str(llvmSymbolizer, " was not found. "
-                  "To symbolize stack traces, install it in your $PATH or set $LLVM_SYMBOLIZER to "
-                  "the location of the binary. When running tests under bazel, use "
-                  "`--test_env=LLVM_SYMBOLIZER=<path>`."));
-              logged = true;
-            }
-          } else {
-            KJ_LOG(ERROR, "bad exit code", WEXITSTATUS(status));
-          }
-          return nullptr;
-        }
-      } else {
-        KJ_LOG(ERROR, "bad exit status", status);
-        return nullptr;
-      }
-      return kj::str("\n", kj::strArray(kj::arrayPtr(lines, i), ""));
-    } else {
-      return kj::str("\nerror starting llvm-symbolizer");
-    }
-  } catch (...) {
-    auto exception = getCaughtExceptionAsKj();
-
-    // Carefully log only the exception description here, since we don't want to trigger stack
-    // trace stringification recursively!
-    KJ_LOG(ERROR, "caught exception while trying to stringify stack trace",
-        exception.getDescription());
-    return nullptr;
-  }
-}
-
-} // namespace
-
-#endif
-
 ArrayPtr<void* const> getStackTrace(ArrayPtr<void*> space, uint ignoreCount) {
   if (getExceptionCallback().stackTraceMode() == ExceptionCallback::StackTraceMode::NONE) {
     return nullptr;
@@ -396,7 +238,7 @@ ArrayPtr<void* const> getStackTrace(ArrayPtr<void*> space, uint ignoreCount) {
   return getStackTrace(space, ignoreCount, GetCurrentThread(), context);
 #elif KJ_HAS_BACKTRACE
   size_t size = backtrace(space.begin(), space.size());
-  for (auto& addr: space.first(size)) {
+  for (auto& addr: space.slice(0, size)) {
     // The addresses produced by backtrace() are return addresses, which means they point to the
     // instruction immediately after the call. Invoking addr2line on these can be confusing because
     // it often points to the next line. If the next instruction is inlined from another function,
@@ -414,7 +256,7 @@ ArrayPtr<void* const> getStackTrace(ArrayPtr<void*> space, uint ignoreCount) {
 
 #if (__GNUC__ && !_WIN32) || __clang__
 // Allow dependents to override the implementation of stack symbolication by making it a weak
-// symbol. We prefer weak symbols over some sort of callback registration mechanism because this
+// symbol. We prefer weak symbols over some sort of callback registration mechanism becasue this
 // allows an alternate symbolication library to be easily linked into tests without changing the
 // code of the test.
 __attribute__((weak))
@@ -425,10 +267,7 @@ String stringifyStackTrace(ArrayPtr<void* const> trace) {
     return nullptr;
   }
 
-#if KJ_HAS_LIBDL
-  return stringifyStackTraceWithLlvm(trace);
-
-#elif KJ_USE_WIN32_DBGHELP && _MSC_VER
+#if KJ_USE_WIN32_DBGHELP && _MSC_VER
 
   // Try to get file/line using SymGetLineFromAddr64(). We don't bother if we aren't on MSVC since
   // this requires MSVC debug info.
@@ -512,7 +351,7 @@ String stringifyStackTrace(ArrayPtr<void* const> trace) {
     return nullptr;
   }
 
-  char line[512]{};
+  char line[512];
   size_t i = 0;
   while (i < kj::size(lines) && fgets(line, sizeof(line), p) != nullptr) {
     // Don't include exception-handling infrastructure or promise infrastructure in stack trace.
@@ -605,15 +444,17 @@ StringPtr stringifyStackTraceAddresses(ArrayPtr<void* const> trace, ArrayPtr<cha
 }
 
 String getStackTrace() {
-  void* space[32]{};
+  void* space[32];
   auto trace = getStackTrace(space, 2);
   return kj::str(stringifyStackTraceAddresses(trace), stringifyStackTrace(trace));
 }
 
 namespace {
 
+#if !KJ_NO_EXCEPTIONS
+
 [[noreturn]] void terminateHandler() {
-  void* traceSpace[32]{};
+  void* traceSpace[32];
 
   // ignoreCount = 3 to ignore std::terminate entry.
   auto trace = kj::getStackTrace(traceSpace, 3);
@@ -641,9 +482,11 @@ namespace {
                                    stringifyStackTrace(trace), '\n');
   }
 
-  kj::FdOutputStream(STDERR_FILENO).write(message.asBytes());
+  kj::FdOutputStream(STDERR_FILENO).write(message.begin(), message.size());
   _exit(1);
 }
+
+#endif
 
 }  // namespace
 
@@ -669,7 +512,7 @@ BOOL WINAPI breakHandler(DWORD type) {
             auto message = kj::str("*** Received CTRL+C. stack: ",
                                    stringifyStackTraceAddresses(trace),
                                    stringifyStackTrace(trace), '\n');
-            FdOutputStream(STDERR_FILENO).write(message.asBytes());
+            FdOutputStream(STDERR_FILENO).write(message.begin(), message.size());
           } else {
             ResumeThread(thread);
           }
@@ -720,7 +563,7 @@ LONG WINAPI sehHandler(EXCEPTION_POINTERS* info) {
                          "; stack: ",
                          stringifyStackTraceAddresses(trace),
                          stringifyStackTrace(trace), '\n');
-  FdOutputStream(STDERR_FILENO).write(message.asBytes());
+  FdOutputStream(STDERR_FILENO).write(message.begin(), message.size());
   return EXCEPTION_EXECUTE_HANDLER;  // still crash
 }
 
@@ -731,8 +574,10 @@ void printStackTraceOnCrash() {
   KJ_WIN32(SetConsoleCtrlHandler(breakHandler, TRUE));
   SetUnhandledExceptionFilter(&sehHandler);
 
+#if !KJ_NO_EXCEPTIONS
   // Also override std::terminate() handler with something nicer for KJ.
   std::set_terminate(&terminateHandler);
+#endif
 }
 
 #elif _WIN32
@@ -740,14 +585,16 @@ void printStackTraceOnCrash() {
 // try to catch SEH nor ctrl+C.
 
 void printStackTraceOnCrash() {
+#if !KJ_NO_EXCEPTIONS
   std::set_terminate(&terminateHandler);
+#endif
 }
 
 #else
 namespace {
 
 [[noreturn]] void crashHandler(int signo, siginfo_t* info, void* context) {
-  void* traceSpace[32]{};
+  void* traceSpace[32];
 
 #if KJ_USE_WIN32_DBGHELP
   // Win32 backtracing can't trace its way out of a Cygwin signal handler. However, Cygwin gives
@@ -770,7 +617,7 @@ namespace {
                          "\nstack: ", stringifyStackTraceAddresses(trace),
                          stringifyStackTrace(trace), '\n');
 
-  FdOutputStream(STDERR_FILENO).write(message.asBytes());
+  FdOutputStream(STDERR_FILENO).write(message.begin(), message.size());
   _exit(1);
 }
 
@@ -818,8 +665,10 @@ void printStackTraceOnCrash() {
   KJ_SYSCALL(sigaction(SIGINT, &action, nullptr));
 #endif
 
+#if !KJ_NO_EXCEPTIONS
   // Also override std::terminate() handler with something nicer for KJ.
   std::set_terminate(&terminateHandler);
+#endif
 }
 #endif
 
@@ -891,7 +740,9 @@ void resetCrashHandlers() {
 #endif
 #endif
 
+#if !KJ_NO_EXCEPTIONS
   std::set_terminate(nullptr);
+#endif
 }
 
 StringPtr KJ_STRINGIFY(Exception::Type type) {
@@ -910,9 +761,9 @@ String KJ_STRINGIFY(const Exception& e) {
 
   Maybe<const Exception::Context&> contextPtr = e.getContext();
   for (;;) {
-    KJ_IF_SOME(c, contextPtr) {
+    KJ_IF_MAYBE(c, contextPtr) {
       ++contextDepth;
-      contextPtr = c.next;
+      contextPtr = c->next;
     } else {
       break;
     }
@@ -923,10 +774,10 @@ String KJ_STRINGIFY(const Exception& e) {
   contextDepth = 0;
   contextPtr = e.getContext();
   for (;;) {
-    KJ_IF_SOME(c, contextPtr) {
+    KJ_IF_MAYBE(c, contextPtr) {
       contextText[contextDepth++] =
-          str(trimSourceFilename(c.file), ":", c.line, ": context: ", c.description, "\n");
-      contextPtr = c.next;
+          str(trimSourceFilename(c->file), ":", c->line, ": context: ", c->description, "\n");
+      contextPtr = c->next;
     } else {
       break;
     }
@@ -966,15 +817,8 @@ Exception::Exception(const Exception& other) noexcept
 
   memcpy(trace, other.trace, sizeof(trace[0]) * traceCount);
 
-  KJ_IF_SOME(c, other.context) {
-    context = heap(*c);
-  }
-
-  for (auto& detail: other.details) {
-    details.add(Detail {
-      .id = detail.id,
-      .value = kj::heapArray(detail.value.asPtr()),
-    });
+  KJ_IF_MAYBE(c, other.context) {
+    context = heap(**c);
   }
 }
 
@@ -982,8 +826,8 @@ Exception::~Exception() noexcept {}
 
 Exception::Context::Context(const Context& other) noexcept
     : file(other.file), line(other.line), description(str(other.description)) {
-  KJ_IF_SOME(n, other.next) {
-    next = heap(*n);
+  KJ_IF_MAYBE(n, other.next) {
+    next = heap(**n);
   }
 }
 
@@ -1007,7 +851,7 @@ void Exception::extendTrace(uint ignoreCount, uint limit) {
   auto newTrace = kj::getStackTrace(newTraceSpace, ignoreCount + 1);
   if (newTrace.size() > ignoreCount + 2) {
     // Remove suffix that won't fit into our static-sized trace.
-    newTrace = newTrace.first(kj::min(kj::size(trace) - traceCount, newTrace.size()));
+    newTrace = newTrace.slice(0, kj::min(kj::size(trace) - traceCount, newTrace.size()));
 
     // Copy the rest into our trace.
     memcpy(trace + traceCount, newTrace.begin(), newTrace.asBytes().size());
@@ -1034,7 +878,7 @@ void Exception::truncateCommonTrace() {
 
   if (traceCount > 0) {
     // Create a "reference" stack trace that is a little bit deeper than the one in the exception.
-    void* refTraceSpace[sizeof(this->trace) / sizeof(this->trace[0]) + 4]{};
+    void* refTraceSpace[sizeof(this->trace) / sizeof(this->trace[0]) + 4];
     auto refTrace = kj::getStackTrace(refTraceSpace, 0);
 
     // We expect that the deepest frame in the exception's stack trace should be somewhere in our
@@ -1053,8 +897,10 @@ void Exception::truncateCommonTrace() {
             // If we matched more than half of the reference trace, guess that this is in fact
             // the prefix we're looking for.
             if (j > refTrace.size() / 2) {
-              // Delete the matching suffix.
-              traceCount -= j;
+              // Delete the matching suffix. Also delete one non-matched entry on the assumption
+              // that both traces contain that stack frame but are simply at different points in
+              // the function.
+              traceCount -= j + 1;
               return;
             }
           }
@@ -1085,56 +931,11 @@ void Exception::addTraceHere() {
 #endif
 }
 
-kj::Maybe<kj::ArrayPtr<const byte>> Exception::getDetail(DetailTypeId typeId) const {
-  for (auto& detail: details) {
-    if (detail.id == typeId) {
-      return detail.value.asPtr();
-    }
-  }
-  return kj::none;
-}
-
-kj::ArrayPtr<const Exception::Detail> Exception::getDetails() const {
-  return details.asPtr();
-}
-
-kj::Maybe<kj::Array<byte>> Exception::releaseDetail(DetailTypeId typeId) {
-  for (auto& detail: details) {
-    if (detail.id == typeId) {
-      kj::Array<byte> result = kj::mv(detail.value);
-      if (&detail != &details.back()) {
-        detail = kj::mv(details.back());
-      }
-      details.removeLast();
-      return kj::mv(result);
-    }
-  }
-  return kj::none;
-}
-
-void Exception::setDetail(DetailTypeId typeId, kj::Array<byte> value) {
-  for (auto& detail: details) {
-    if (detail.id == typeId) {
-      detail.value = kj::mv(value);
-      return;
-    }
-  }
-  details.add(Detail {
-    .id = typeId,
-    .value = kj::mv(value),
-  });
-}
+#if !KJ_NO_EXCEPTIONS
 
 namespace {
 
-thread_local ExceptionImpl* currentException = nullptr;
-
-void validateExceptionPointer(const ExceptionImpl* e) noexcept {
-  // Occasionally in production we are seeing `currentException` have the value 1. Try to figure
-  // this out...
-  KJ_ASSERT(e == nullptr || reinterpret_cast<uintptr_t>(e) >= 4096,
-      "detected bogus ExceptionImpl pointer", e);
-}
+KJ_THREADLOCAL_PTR(ExceptionImpl) currentException = nullptr;
 
 }  // namespace
 
@@ -1147,9 +948,8 @@ public:
     // No need to copy whatBuffer since it's just to hold the return value of what().
     insertIntoCurrentExceptions();
   }
-  ~ExceptionImpl() noexcept {
+  ~ExceptionImpl() {
     // Look for ourselves in the list.
-    validateExceptionPointer(nextCurrentException);
     for (auto* ptr = &currentException; *ptr != nullptr; ptr = &(*ptr)->nextCurrentException) {
       if (*ptr == this) {
         *ptr = nextCurrentException;
@@ -1159,7 +959,7 @@ public:
 
     // Possibly the ExceptionImpl was destroyed on a different thread than created it? That's
     // pretty bad, we'd better abort.
-    KJ_FAIL_ASSERT("ExceptionImpl not found on currentException list?");
+    abort();
   }
 
   const char* what() const noexcept override;
@@ -1170,9 +970,7 @@ private:
 
   void insertIntoCurrentExceptions() {
     nextCurrentException = currentException;
-    validateExceptionPointer(nextCurrentException);
     currentException = this;
-    validateExceptionPointer(currentException);
   }
 
   friend class InFlightExceptionIterator;
@@ -1187,22 +985,25 @@ InFlightExceptionIterator::InFlightExceptionIterator()
     : ptr(currentException) {}
 
 Maybe<const Exception&> InFlightExceptionIterator::next() {
-  if (ptr == nullptr) return kj::none;
+  if (ptr == nullptr) return nullptr;
 
-  const ExceptionImpl* result = static_cast<const ExceptionImpl*>(ptr);
-  validateExceptionPointer(result);
-  ptr = result->nextCurrentException;
-  return *result;
+  const ExceptionImpl& result = *static_cast<const ExceptionImpl*>(ptr);
+  ptr = result.nextCurrentException;
+  return result;
 }
+
+#endif  // !KJ_NO_EXCEPTIONS
 
 kj::Exception getDestructionReason(void* traceSeparator, kj::Exception::Type defaultType,
     const char* defaultFile, int defaultLine, kj::StringPtr defaultDescription) {
+#if !KJ_NO_EXCEPTIONS
   InFlightExceptionIterator iter;
-  KJ_IF_SOME(e, iter.next()) {
-    auto copy = kj::cp(e);
+  KJ_IF_MAYBE(e, iter.next()) {
+    auto copy = kj::cp(*e);
     copy.truncateCommonTrace();
     return copy;
   } else {
+#endif
     // Darn, use a generic exception.
     kj::Exception exception(defaultType, defaultFile, defaultLine,
         kj::heapString(defaultDescription));
@@ -1214,14 +1015,16 @@ kj::Exception getDestructionReason(void* traceSeparator, kj::Exception::Type def
     exception.addTrace(traceSeparator);
 
     return exception;
+#if !KJ_NO_EXCEPTIONS
   }
+#endif
 }
 
 // =======================================================================================
 
 namespace {
 
-thread_local ExceptionCallback* threadLocalCallback = nullptr;
+KJ_THREADLOCAL_PTR(ExceptionCallback) threadLocalCallback = nullptr;
 
 }  // namespace
 
@@ -1281,6 +1084,9 @@ public:
   RootExceptionCallback(): ExceptionCallback(*this) {}
 
   void onRecoverableException(Exception&& exception) override {
+#if KJ_NO_EXCEPTIONS
+    logException(LogSeverity::ERROR, mv(exception));
+#else
     if (_::uncaughtExceptionCount() > 0) {
       // Bad time to throw an exception.  Just log instead.
       //
@@ -1291,10 +1097,15 @@ public:
     } else {
       throw ExceptionImpl(mv(exception));
     }
+#endif
   }
 
   void onFatalException(Exception&& exception) override {
+#if KJ_NO_EXCEPTIONS
+    logException(LogSeverity::FATAL, mv(exception));
+#else
     throw ExceptionImpl(mv(exception));
+#endif
   }
 
   void logMessage(LogSeverity severity, const char* file, int line, int contextDepth,
@@ -1393,9 +1204,79 @@ void throwRecoverableException(kj::Exception&& exception, uint ignoreCount) {
 
 namespace _ {  // private
 
+#if KJ_CPP_STD >= 201703L
+
 uint uncaughtExceptionCount() {
   return std::uncaught_exceptions();
 }
+
+#elif __GNUC__
+
+// Horrible -- but working -- hack:  We can dig into __cxa_get_globals() in order to extract the
+// count of uncaught exceptions.  This function is part of the C++ ABI implementation used on Linux,
+// OSX, and probably other platforms that use GCC.  Unfortunately, __cxa_get_globals() is only
+// actually defined in cxxabi.h on some platforms (e.g. Linux, but not OSX), and even where it is
+// defined, it returns an incomplete type.  Here we use the same hack used by Evgeny Panasyuk:
+//   https://github.com/panaseleus/stack_unwinding/blob/master/boost/exception/uncaught_exception_count.hpp
+//
+// Notice that a similar hack is possible on MSVC -- if its C++11 support ever gets to the point of
+// supporting KJ in the first place.
+//
+// It appears likely that a future version of the C++ standard may include an
+// uncaught_exception_count() function in the standard library, or an equivalent language feature.
+// Some discussion:
+//   https://groups.google.com/a/isocpp.org/d/msg/std-proposals/HglEslyZFYs/kKdu5jJw5AgJ
+
+struct FakeEhGlobals {
+  // Fake
+
+  void* caughtExceptions;
+  uint uncaughtExceptions;
+};
+
+// LLVM's libstdc++ doesn't declare __cxa_get_globals in its cxxabi.h. GNU does. Because it is
+// extern "C", the compiler wills get upset if we re-declare it even in a different namespace.
+#if _LIBCPPABI_VERSION
+extern "C" void* __cxa_get_globals();
+#else
+using abi::__cxa_get_globals;
+#endif
+
+uint uncaughtExceptionCount() {
+  return reinterpret_cast<FakeEhGlobals*>(__cxa_get_globals())->uncaughtExceptions;
+}
+
+#elif _MSC_VER
+
+#if _MSC_VER >= 1900
+// MSVC14 has a refactored CRT which now provides a direct accessor for this value.
+// See https://svn.boost.org/trac/boost/ticket/10158 for a brief discussion.
+extern "C" int *__cdecl __processing_throw();
+
+uint uncaughtExceptionCount() {
+  return static_cast<uint>(*__processing_throw());
+}
+
+#elif _MSC_VER >= 1400
+// The below was copied from:
+// https://github.com/panaseleus/stack_unwinding/blob/master/boost/exception/uncaught_exception_count.hpp
+
+extern "C" char *__cdecl _getptd();
+
+uint uncaughtExceptionCount() {
+  return *reinterpret_cast<uint*>(_getptd() + (sizeof(void*) == 8 ? 0x100 : 0x90));
+}
+#else
+uint uncaughtExceptionCount() {
+  // Since the above doesn't work, fall back to uncaught_exception(). This will produce incorrect
+  // results in very obscure cases that Cap'n Proto doesn't really rely on anyway.
+  return std::uncaught_exception();
+}
+#endif
+
+#else
+#error "This needs to be ported to your compiler / C++ ABI."
+#endif
 
 }  // namespace _ (private)
 
@@ -1405,12 +1286,14 @@ bool UnwindDetector::isUnwinding() const {
   return _::uncaughtExceptionCount() > uncaughtCount;
 }
 
+#if !KJ_NO_EXCEPTIONS
 void UnwindDetector::catchThrownExceptionAsSecondaryFault() const {
   // TODO(someday):  Attach the secondary exception to whatever primary exception is causing
   //   the unwind.  For now we just drop it on the floor as this is probably fine most of the
   //   time.
   getCaughtExceptionAsKj();
 }
+#endif
 
 #if __GNUC__ && !KJ_NO_RTTI
 static kj::String demangleTypeName(const char* name) {
@@ -1438,8 +1321,8 @@ size_t sharedSuffixLength(kj::ArrayPtr<void* const> a, kj::ArrayPtr<void* const>
   size_t result = 0;
   while (a.size() > 0 && b.size() > 0 && a.back() == b.back())  {
     ++result;
-    a = a.first(a.size() - 1);
-    b = b.first(b.size() - 1);
+    a = a.slice(0, a.size() - 1);
+    b = b.slice(0, b.size() - 1);
   }
   return result;
 }
@@ -1465,19 +1348,54 @@ kj::ArrayPtr<void* const> computeRelativeTrace(
        i <= (ssize_t)(relativeTo.size() - MIN_MATCH_LEN);
        i++) {
     // Negative values truncate `trace`, positive values truncate `relativeTo`.
-    kj::ArrayPtr<void* const> subtrace = trace.first(trace.size() - kj::max<ssize_t>(0, -i));
+    kj::ArrayPtr<void* const> subtrace = trace.slice(0, trace.size() - kj::max<ssize_t>(0, -i));
     kj::ArrayPtr<void* const> subrt = relativeTo
-        .first(relativeTo.size() - kj::max<ssize_t>(0, i));
+        .slice(0, relativeTo.size() - kj::max<ssize_t>(0, i));
 
     uint matchLen = sharedSuffixLength(subtrace, subrt);
     if (matchLen > bestMatchLen) {
       bestMatchLen = matchLen;
-      bestMatch = subtrace.first(subtrace.size() - matchLen + 1);
+      bestMatch = subtrace.slice(0, subtrace.size() - matchLen + 1);
     }
   }
 
   return bestMatch;
 }
+
+#if KJ_NO_EXCEPTIONS
+
+namespace _ {  // private
+
+class RecoverableExceptionCatcher: public ExceptionCallback {
+  // Catches a recoverable exception without using try/catch.  Used when compiled with
+  // -fno-exceptions.
+
+public:
+  virtual ~RecoverableExceptionCatcher() noexcept(false) {}
+
+  void onRecoverableException(Exception&& exception) override {
+    if (caught == nullptr) {
+      caught = mv(exception);
+    } else {
+      // TODO(someday):  Consider it a secondary fault?
+    }
+  }
+
+  Maybe<Exception> caught;
+};
+
+Maybe<Exception> runCatchingExceptions(Runnable& runnable) {
+  RecoverableExceptionCatcher catcher;
+  runnable.run();
+  KJ_IF_MAYBE(e, catcher.caught) {
+    e->truncateCommonTrace();
+  }
+  return mv(catcher.caught);
+}
+
+}  // namespace _ (private)
+
+#else  // KJ_NO_EXCEPTIONS
 
 kj::Exception getCaughtExceptionAsKj() {
   try {
@@ -1504,5 +1422,6 @@ kj::Exception getCaughtExceptionAsKj() {
 #endif
   }
 }
+#endif  // !KJ_NO_EXCEPTIONS
 
 }  // namespace kj

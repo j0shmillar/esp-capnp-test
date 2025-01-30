@@ -42,9 +42,9 @@
 #include <kj/vector.h>
 #include <kj/io.h>
 #include <kj/miniposix.h>
-#include <kj/filesystem.h>
 #include <kj/debug.h>
 #include "../message.h"
+#include <iostream>
 #include <kj/main.h>
 #include <kj/parse/char.h>
 #include <sys/stat.h>
@@ -328,8 +328,8 @@ public:
   // shared options
 
   kj::MainBuilder::Validity addImportPath(kj::StringPtr path) {
-    KJ_IF_SOME(dir, getSourceDirectory(path, false)) {
-      loader.addImportPath(dir);
+    KJ_IF_MAYBE(dir, getSourceDirectory(path, false)) {
+      loader.addImportPath(*dir);
       return true;
     } else {
       return "no such directory";
@@ -356,8 +356,8 @@ public:
 #endif
       };
       for (auto path: STANDARD_IMPORT_PATHS) {
-        KJ_IF_SOME(dir, getSourceDirectory(path, false)) {
-          loader.addImportPath(dir);
+        KJ_IF_MAYBE(dir, getSourceDirectory(path, false)) {
+          loader.addImportPath(*dir);
         } else {
           // ignore standard path that doesn't exist
         }
@@ -367,10 +367,10 @@ public:
     }
 
     auto dirPathPair = interpretSourceFile(file);
-    KJ_IF_SOME(module, loader.loadModule(dirPathPair.dir, dirPathPair.path)) {
-      auto compiled = compiler->add(module);
+    KJ_IF_MAYBE(module, loader.loadModule(dirPathPair.dir, dirPathPair.path)) {
+      auto compiled = compiler->add(*module);
       compiler->eagerlyCompile(compiled.getId(), compileEagerness);
-      sourceFiles.add(SourceFile { compiled.getId(), compiled, module.getSourceName(), &module });
+      sourceFiles.add(SourceFile { compiled.getId(), compiled, module->getSourceName(), &*module });
     } else {
       return "no such file";
     }
@@ -391,16 +391,16 @@ public:
   // "compile" command
 
   kj::MainBuilder::Validity addOutput(kj::StringPtr spec) {
-    KJ_IF_SOME(split, spec.findFirst(':')) {
-      kj::StringPtr dir = spec.slice(split + 1);
-      auto plugin = spec.first(split);
+    KJ_IF_MAYBE(split, spec.findFirst(':')) {
+      kj::StringPtr dir = spec.slice(*split + 1);
+      auto plugin = spec.slice(0, *split);
 
-      if (split == 1 && (dir.startsWith("/") || dir.startsWith("\\"))) {
+      if (*split == 1 && (dir.startsWith("/") || dir.startsWith("\\"))) {
         // The colon is the second character and is immediately followed by a slash or backslash.
         // So, the user passed something like `-o c:/foo`. Is this a request to run the C plugin
         // and output to `/foo`? Or are we on Windows, and is this a request to run the plugin
         // `c:/foo`?
-        KJ_IF_SOME(split2, dir.findFirst(':')) {
+        KJ_IF_MAYBE(split2, dir.findFirst(':')) {
           // There are two colons. The first ':' was the second char, and was followed by '/' or
           // '\', e.g.:
           //     capnp compile -o c:/foo.exe:bar
@@ -425,8 +425,8 @@ public:
           //
           // We therefore conclude that the *second* colon is in fact the plugin/location separator.
 
-          dir = dir.slice(split2 + 1);
-          plugin = spec.first(split2 + 2);
+          dir = dir.slice(*split2 + 1);
+          plugin = spec.slice(0, *split2 + 2);
 #if _WIN32
         } else {
           // The user wrote something like:
@@ -439,7 +439,7 @@ public:
           // the above is actually a request to run the plugin `c:/foo/bar`, outputting to the
           // current directory.
 
-          outputs.add(OutputDirective { spec.asArray(), kj::none });
+          outputs.add(OutputDirective { spec.asArray(), nullptr });
           return true;
 #endif
         }
@@ -451,14 +451,14 @@ public:
       }
       outputs.add(OutputDirective { plugin, disk->getCurrentPath().evalNative(dir) });
     } else {
-      outputs.add(OutputDirective { spec.asArray(), kj::none });
+      outputs.add(OutputDirective { spec.asArray(), nullptr });
     }
 
     return true;
   }
 
   kj::MainBuilder::Validity addSourcePrefix(kj::StringPtr prefix) {
-    if (getSourceDirectory(prefix, true) == kj::none) {
+    if (getSourceDirectory(prefix, true) == nullptr) {
       return "no such directory";
     } else {
       return true;
@@ -502,26 +502,6 @@ public:
       requestedFile.setFilename(sourceFiles[i].name);
       requestedFile.adoptImports(compiler->getFileImportTable(
           *sourceFiles[i].module, Orphanage::getForMessageContaining(requestedFile)));
-      // Populate FileSourceInfo with identifier resolutions, including type IDs and member details.
-      auto fileSourceInfo = requestedFile.initFileSourceInfo();
-      const auto resolutions = sourceFiles[i].module->getResolutions();
-      auto identifiers = fileSourceInfo.initIdentifiers(resolutions.size());
-      for (size_t j = 0; j < resolutions.size(); j++) {
-        auto identifier = identifiers[j];
-        identifier.setStartByte(resolutions[j].startByte);
-        identifier.setEndByte(resolutions[j].endByte);
-        KJ_SWITCH_ONEOF(resolutions[j].target) {
-          KJ_CASE_ONEOF(type, Resolution::Type) {
-            identifier.setTypeId(type.typeId);
-          }
-          KJ_CASE_ONEOF(member, Resolution::Member) {
-            identifier.initMember();
-            auto identifier_member = identifier.getMember();
-            identifier_member.setParentTypeId(member.parentTypeId);
-            identifier_member.setOrdinal(member.ordinal);
-          }
-        }
-      }
     }
 
     for (auto& output: outputs) {
@@ -530,7 +510,7 @@ public:
         continue;
       }
 
-      int pipeFds[2]{};
+      int pipeFds[2];
       KJ_SYSCALL(kj::miniposix::pipe(pipeFds));
 
       kj::String exeName;
@@ -574,11 +554,11 @@ public:
         KJ_SYSCALL(dup2(pipeFds[0], STDIN_FILENO));
         KJ_SYSCALL(close(pipeFds[0]));
 
-        KJ_IF_SOME(d, output.dir) {
+        KJ_IF_MAYBE(d, output.dir) {
 #if _WIN32
-          KJ_SYSCALL(SetCurrentDirectoryW(d.forWin32Api(true).begin()), d.toWin32String(true));
+          KJ_SYSCALL(SetCurrentDirectoryW(d->forWin32Api(true).begin()), d->toWin32String(true));
 #else
-          auto wd = d.toString(true);
+          auto wd = d->toString(true);
           KJ_SYSCALL(chdir(wd.cStr()), wd);
           KJ_SYSCALL(setenv("PWD", wd.cStr(), true));
 #endif
@@ -590,7 +570,7 @@ public:
         // an arg list. We do the escaping ourselves by wrapping the name in quotes. We know
         // that exeName itself can't contain quotes (since filenames aren't allowed to contain
         // quotes on Windows), so we don't have to account for those.
-        KJ_ASSERT(exeName.findFirst('\"') == kj::none,
+        KJ_ASSERT(exeName.findFirst('\"') == nullptr,
             "Windows filenames can't contain quotes", exeName);
         auto escapedExeName = kj::str("\"", exeName, "\"");
 #endif
@@ -698,7 +678,7 @@ private:
     if (name == "text"       ) return Format::TEXT;
     if (name == "json"       ) return Format::JSON;
 
-    return kj::none;
+    return nullptr;
   }
 
   kj::StringPtr toString(Format format) {
@@ -741,18 +721,18 @@ private:
 
 public:
   kj::MainBuilder::Validity setConversion(kj::StringPtr conversion) {
-    KJ_IF_SOME(colon, conversion.findFirst(':')) {
-      auto from = kj::str(conversion.first(colon));
-      auto to = conversion.slice(colon + 1);
+    KJ_IF_MAYBE(colon, conversion.findFirst(':')) {
+      auto from = kj::str(conversion.slice(0, *colon));
+      auto to = conversion.slice(*colon + 1);
 
-      KJ_IF_SOME(f, parseFormatName(from)) {
-        convertFrom = f;
+      KJ_IF_MAYBE(f, parseFormatName(from)) {
+        convertFrom = *f;
       } else {
         return kj::str("unknown format: ", from);
       }
 
-      KJ_IF_SOME(t, parseFormatName(to)) {
-        convertTo = t;
+      KJ_IF_MAYBE(t, parseFormatName(to)) {
+        convertTo = *t;
       } else {
         return kj::str("unknown format: ", to);
       }
@@ -773,11 +753,11 @@ public:
   kj::MainBuilder::Validity convert() {
     {
       auto result = verifyRequirements(convertFrom);
-      if (result.getError() != kj::none) return result;
+      if (result.getError() != nullptr) return result;
     }
     {
       auto result = verifyRequirements(convertTo);
-      if (result.getError() != kj::none) return result;
+      if (result.getError() != nullptr) return result;
     }
 
     kj::FdInputStream rawInput(STDIN_FILENO);
@@ -787,7 +767,7 @@ public:
 
     if (!quiet) {
       auto result = checkPlausibility(convertFrom, input.getReadBuffer());
-      if (result.getError() != kj::none) {
+      if (result.getError() != nullptr) {
         return kj::mv(result);
       }
     }
@@ -849,7 +829,7 @@ private:
                 if (depth == 0 && sawClose) {
                   // We already got one complete message. This is the start of the next message.
                   // Stop here.
-                  chars.addAll(buffer.first(i));
+                  chars.addAll(buffer.slice(0, i));
                   chars.add('\0');
                   input.skip(i);
                   return kj::String(chars.releaseAsArray());
@@ -944,7 +924,7 @@ private:
                 if (depth == 0 && sawClose) {
                   // We already got one complete message. This is the start of the next message.
                   // Stop here.
-                  chars.addAll(buffer.first(i));
+                  chars.addAll(buffer.slice(0, i));
                   chars.add('\0');
                   input.skip(i);
                   return kj::String(chars.releaseAsArray());
@@ -998,22 +978,22 @@ private:
     ParseErrorCatcher(kj::ProcessContext& context): context(context) {}
     ~ParseErrorCatcher() noexcept(false) {
       if (!unwindDetector.isUnwinding()) {
-        KJ_IF_SOME(e, exception) {
+        KJ_IF_MAYBE(e, exception) {
           context.error(kj::str(
               "*** ERROR CONVERTING PREVIOUS MESSAGE ***\n"
               "The following error occurred while converting the message above.\n"
               "This probably means the input data is invalid/corrupted.\n",
-              "Exception description: ", e.getDescription(), "\n"
-              "Code location: ", e.getFile(), ":", e.getLine(), "\n"
+              "Exception description: ", e->getDescription(), "\n"
+              "Code location: ", e->getFile(), ":", e->getLine(), "\n"
               "*** END ERROR ***"));
         }
       }
     }
 
-    void onRecoverableException(kj::Exception&& e) override {
+    void onRecoverableException(kj::Exception&& e) {
       // Only capture the first exception, on the assumption that later exceptions are probably
       // just cascading problems.
-      if (exception == kj::none) {
+      if (exception == nullptr) {
         exception = kj::mv(e);
       }
     }
@@ -1066,9 +1046,9 @@ private:
         auto words = kj::heapArray<word>(computeUnpackedSizeInWords(allBytes));
         kj::ArrayInputStream input(allBytes);
         capnp::_::PackedInputStream unpacker(input);
-        unpacker.read(words.asBytes());
+        unpacker.read(words.asBytes().begin(), words.asBytes().size());
         word dummy;
-        KJ_ASSERT(unpacker.tryRead(kj::arrayPtr(&dummy, 1).asBytes(), sizeof(dummy)) == 0);
+        KJ_ASSERT(unpacker.tryRead(&dummy, sizeof(dummy), sizeof(dummy)) == 0);
 
         kj::ArrayPtr<const word> segments[1] = { words };
         SegmentArrayMessageReader message(segments, options);
@@ -1120,7 +1100,7 @@ private:
         auto words = kj::heapArray<word>(reader.totalSize().wordCount + 1);
         memset(words.begin(), 0, words.asBytes().size());
         copyToUnchecked(reader, words);
-        output.write(words.asBytes());
+        output.write(words.begin(), words.asBytes().size());
         return;
       }
       case Format::FLAT_PACKED: {
@@ -1129,19 +1109,19 @@ private:
         copyToUnchecked(reader, words);
         kj::BufferedOutputStreamWrapper buffered(output);
         capnp::_::PackedOutputStream packed(buffered);
-        packed.write(words.asBytes());
+        packed.write(words.begin(), words.asBytes().size());
         return;
       }
       case Format::CANONICAL: {
         auto words = reader.canonicalize();
-        output.write(words.asBytes());
+        output.write(words.begin(), words.asBytes().size());
         return;
       }
       case Format::TEXT: {
         TextCodec codec;
         codec.setPrettyPrint(pretty);
         auto text = codec.encode(reader.as<DynamicStruct>(rootType));
-        output.write({text.asBytes(), "\n"_kjb});
+        output.write({text.asBytes(), kj::StringPtr("\n").asBytes()});
         return;
       }
       case Format::JSON: {
@@ -1149,7 +1129,7 @@ private:
         codec.setPrettyPrint(pretty);
         codec.handleByAnnotation(rootType);
         auto text = codec.encode(reader.as<DynamicStruct>(rootType));
-        output.write({text.asBytes(), "\n"_kjb});
+        output.write({text.asBytes(), kj::StringPtr("\n").asBytes()});
         return;
       }
     }
@@ -1212,12 +1192,12 @@ public:
       }
 
       bool hadErrors() override {
-        return error != kj::none;
+        return error != nullptr;
       }
 
       kj::MainBuilder::Validity getValidity() {
-        KJ_IF_SOME(e, error) {
-          return kj::mv(e);
+        KJ_IF_MAYBE(e, error) {
+          return kj::mv(*e);
         } else {
           return true;
         }
@@ -1243,15 +1223,15 @@ public:
       // Empty argument?
       errorReporter.addError(0, 0, "Couldn't parse type name.");
     } else {
-      KJ_IF_SOME(expression, parser.getParsers().expression(parserInput)) {
+      KJ_IF_MAYBE(expression, parser.getParsers().expression(parserInput)) {
         // The input is expected to contain a *single* expression.
         if (parserInput.getPosition() == tokens.end()) {
           // Hooray, now parse it.
-          KJ_IF_SOME(compiledType,
-              sourceFiles[0].compiled.evalType(expression.getReader(), errorReporter)) {
-            KJ_IF_SOME(type, compiledType.getSchema()) {
-              if (type.isStruct()) {
-                rootType = type.asStruct();
+          KJ_IF_MAYBE(compiledType,
+              sourceFiles[0].compiled.evalType(expression->getReader(), errorReporter)) {
+            KJ_IF_MAYBE(type, compiledType->getSchema()) {
+              if (type->isStruct()) {
+                rootType = type->asStruct();
                 success = true;
               } else {
                 errorReporter.addError(0, 0, "Type is not a struct.");
@@ -1586,7 +1566,7 @@ private:
       }
     }
 
-    return kj::none;
+    return nullptr;
   }
 
   kj::MainBuilder::Validity checkPlausibility(Format format, kj::ArrayPtr<const byte> prefix) {
@@ -1595,21 +1575,21 @@ private:
         return true;
 
       case IMPOSSIBLE:
-        KJ_IF_SOME(guess, guessFormat(prefix)) {
+        KJ_IF_MAYBE(guess, guessFormat(prefix)) {
           return kj::str(
              "The input is not in \"", toString(format), "\" format. It looks like it is in \"",
-             toString(guess), "\" format. Try that instead.");
+             toString(*guess), "\" format. Try that instead.");
         } else {
           return kj::str(
              "The input is not in \"", toString(format), "\" format.");
         }
 
       case IMPLAUSIBLE:
-        KJ_IF_SOME(guess, guessFormat(prefix)) {
+        KJ_IF_MAYBE(guess, guessFormat(prefix)) {
           context.warning(kj::str(
               "*** WARNING ***\n"
               "The input data does not appear to be in \"", toString(format), "\" format. It\n"
-              "looks like it may be in \"", toString(guess), "\" format. I'll try to parse\n"
+              "looks like it may be in \"", toString(*guess), "\" format. I'll try to parse\n"
               "it in \"", toString(format), "\" format as you requested, but if it doesn't work,\n"
               "try \"", toString(format), "\" instead. Use --quiet to suppress this warning.\n"
               "*** END WARNING ***\n"));
@@ -1669,8 +1649,8 @@ public:
   }
 
   kj::MainBuilder::Validity setEvalOutputFormat(kj::StringPtr format) {
-    KJ_IF_SOME(f, parseFormatName(format)) {
-      convertTo = f;
+    KJ_IF_MAYBE(f, parseFormatName(format)) {
+      convertTo = *f;
       return true;
     } else {
       return kj::str("unknown format: ", format);
@@ -1701,8 +1681,8 @@ public:
     kj::parse::IteratorInput<char, const char*> input(name.begin(), name.end());
 
     kj::Array<kj::Tuple<kj::String, kj::Array<uint64_t>>> nameParts;
-    KJ_IF_SOME(p, parser(input)) {
-      nameParts = kj::mv(p);
+    KJ_IF_MAYBE(p, parser(input)) {
+      nameParts = kj::mv(*p);
     } else {
       return "invalid syntax";
     }
@@ -1715,8 +1695,8 @@ public:
     for (; pos != nameParts.end(); ++pos) {
       kj::StringPtr part = kj::get<0>(*pos);
 
-      KJ_IF_SOME(childId, compiler->lookup(scopeId, part)) {
-        scopeId = childId;
+      KJ_IF_MAYBE(childId, compiler->lookup(scopeId, part)) {
+        scopeId = *childId;
 
         if (kj::get<1>(*pos).size() > 0) {
           stoppedAtSubscript = true;
@@ -1765,8 +1745,8 @@ public:
       if (!stoppedAtSubscript) {
         if (value.getType() == DynamicValue::STRUCT) {
           auto structValue = value.as<DynamicStruct>();
-          KJ_IF_SOME(field, structValue.getSchema().findFieldByName(partName)) {
-            value = structValue.get(field);
+          KJ_IF_MAYBE(field, structValue.getSchema().findFieldByName(partName)) {
+            value = structValue.get(*field);
           } else {
             return kj::str("'", kj::get<0>(pos[-1]), "' has no member '", partName, "'.");
           }
@@ -1783,12 +1763,12 @@ public:
           if (subscript < listValue.size()) {
             value = listValue[subscript];
           } else {
-            return kj::str("'", partName, "[", kj::strArray(subscripts.first(i + 1), "]["),
+            return kj::str("'", partName, "[", kj::strArray(subscripts.slice(0, i + 1), "]["),
                            "]' is out-of-bounds.");
           }
         } else {
           if (i > 0) {
-            return kj::str("'", partName, "[", kj::strArray(subscripts.first(i), "]["),
+            return kj::str("'", partName, "[", kj::strArray(subscripts.slice(0, i), "]["),
                            "]' is not a list.");
           } else {
             return kj::str("'", partName, "' is not a list.");
@@ -1930,9 +1910,9 @@ private:
 
     if (path.size() == 0) return disk->getRoot();
 
-    KJ_IF_SOME(sdir, sourceDirectories.find(path)) {
-      sdir.isSourcePrefix = sdir.isSourcePrefix || isSourcePrefix;
-      return *sdir.dir;
+    KJ_IF_MAYBE(sdir, sourceDirectories.find(path)) {
+      sdir->isSourcePrefix = sdir->isSourcePrefix || isSourcePrefix;
+      return *sdir->dir;
     }
 
     if (path == cwd) {
@@ -1951,9 +1931,9 @@ private:
       return result;
     }
 
-    KJ_IF_SOME(dir, disk->getRoot().tryOpenSubdir(path)) {
-      auto& result = *dir.get();
-      sourceDirectories.insert(kj::mv(path), { kj::mv(dir), isSourcePrefix });
+    KJ_IF_MAYBE(dir, disk->getRoot().tryOpenSubdir(path)) {
+      auto& result = *dir->get();
+      sourceDirectories.insert(kj::mv(path), { kj::mv(*dir), isSourcePrefix });
 #if _WIN32
       kj::String prefix = pathStr.endsWith("/") || pathStr.endsWith("\\")
                         ? kj::str(pathStr) : kj::str(pathStr, '\\');
@@ -1963,7 +1943,7 @@ private:
       dirPrefixes.insert(&result, kj::mv(prefix));
       return result;
     } else {
-      return kj::none;
+      return nullptr;
     }
   }
 
@@ -1981,9 +1961,9 @@ private:
       auto prefix = path.slice(0, i);
       auto remainder = path.slice(i, path.size());
 
-      KJ_IF_SOME(sdir, sourceDirectories.find(prefix)) {
-        if (sdir.isSourcePrefix) {
-          return { *sdir.dir, remainder.clone() };
+      KJ_IF_MAYBE(sdir, sourceDirectories.find(prefix)) {
+        if (sdir->isSourcePrefix) {
+          return { *sdir->dir, remainder.clone() };
         }
       }
     }
@@ -2013,8 +1993,8 @@ private:
   }
 
   kj::String getDisplayName(const kj::ReadableDirectory& dir, kj::PathPtr path) {
-    KJ_IF_SOME(prefix, dirPrefixes.find(&dir)) {
-      return kj::str(prefix, path.toNativeString());
+    KJ_IF_MAYBE(prefix, dirPrefixes.find(&dir)) {
+      return kj::str(*prefix, path.toNativeString());
     } else if (&dir == &disk->getRoot()) {
       return path.toNativeString(true);
     } else if (&dir == &disk->getCurrent()) {

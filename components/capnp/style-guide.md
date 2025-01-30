@@ -252,11 +252,11 @@ Note that even parsers for machine-readable text-based languages (config languag
 
 This section contains guidelines for usage of C++ language features.
 
-### Use C++20 (or later)
+### Use C++11 (or later)
 
-C++11 and later revisions completely transformed the way the C++ language is used. New code should take heavy advantage of the new features, especially rvalue references (move semantics), lambda expressions, and the `co_await` keyword (from C++20) to await promises.
+C++11 completely transformed the way the C++ language is used. New code should take heavy advantage of the new features, especially rvalue references (move semantics) and lambda expressions.
 
-KJ requires C++20. Application code (not used as a library) may consider requiring later revisions, or even requiring a specific compiler and tracking the latest language features implemented by it.
+KJ requires C++11. Application code (not used as a library) may consider requiring C++14, or even requiring a specific compiler and tracking the latest language features implemented by it.
 
 ### Heap allocation
 
@@ -351,9 +351,9 @@ Now people can use your template metafunction without the pesky `::Type` or `::v
         template <typename T>
         Wrapper<T> makeWrapper(T&& inner);
         // Wraps `inner` and returns the wrapper.
-
+  
   Should `inner` be taken by reference or by value here? Both might be useful, depending on the use case. The right answer is actually to support both: if the input is an lvalue, take it by reference, but if it's an rvalue, take it by value (move). And as it turns out, if you write your declaration exactly as shown above, this is exactly what you get, because if the input is an lvalue, `T` will implicitly bind to a reference type, whereas if the input is an rvalue or rvalue reference, T will not be a reference.
-
+  
   In general, you should assume KJ code in this pattern uses this rule, so if you are passing in an lvalue but don't actually want it wrapped by reference, wrap it in `kj::mv()`.
 
 * Never use function or method pointers. Prefer templating across functors (like STL does), or for non-templates use `kj::Function` (which will handle this for you).
@@ -380,7 +380,7 @@ We do NOT recommend disabling RTTI in your own code.
 
 ### Lambdas
 
-Lambda capture lists must never use `=` to specify "capture all by value", because this makes it hard to review the capture list for possible lifetime issues.
+Lamba capture lists must never use `=` to specify "capture all by value", because this makes it hard to review the capture list for possible lifetime issues.
 
 Capture lists *may* use `&` ("capture all by reference") but *only* in cases where it is known that the lambda will not outlive the current stack frame. In fact, they generally *should* use `&` in this case, to make clear that there are no lifetime issues to think about.
 

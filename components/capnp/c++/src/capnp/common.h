@@ -46,9 +46,9 @@ CAPNP_BEGIN_HEADER
 
 namespace capnp {
 
-#define CAPNP_VERSION_MAJOR 2
+#define CAPNP_VERSION_MAJOR 1
 #define CAPNP_VERSION_MINOR 0
-#define CAPNP_VERSION_MICRO 0
+#define CAPNP_VERSION_MICRO 2
 
 #define CAPNP_VERSION \
   (CAPNP_VERSION_MAJOR * 1000000 + CAPNP_VERSION_MINOR * 1000 + CAPNP_VERSION_MICRO)
@@ -70,6 +70,7 @@ struct Void {
   // differently from other types.
 
   inline constexpr bool operator==(Void other) const { return true; }
+  inline constexpr bool operator!=(Void other) const { return false; }
 };
 
 static constexpr Void VOID = Void();
@@ -513,7 +514,7 @@ constexpr auto MAX_SEGMENT_WORDS =
     bounded<kj::maxValueForBits<SEGMENT_WORD_COUNT_BITS>()>() * WORDS;
 constexpr auto MAX_LIST_ELEMENTS =
     bounded<kj::maxValueForBits<LIST_ELEMENT_COUNT_BITS>()>() * ELEMENTS;
-constexpr auto MAX_STRUCT_DATA_WORDS =
+constexpr auto MAX_STUCT_DATA_WORDS =
     bounded<kj::maxValueForBits<STRUCT_DATA_WORD_COUNT_BITS>()>() * WORDS;
 constexpr auto MAX_STRUCT_POINTER_COUNT =
     bounded<kj::maxValueForBits<STRUCT_POINTER_COUNT_BITS>()>() * POINTERS;
@@ -526,7 +527,7 @@ using StructPointerOffset = StructPointerCount;
 // Type of a field offset.
 
 inline StructDataOffset assumeDataOffset(uint32_t offset) {
-  return assumeMax(MAX_STRUCT_DATA_WORDS * BITS_PER_WORD * (ONE * ELEMENTS / BITS),
+  return assumeMax(MAX_STUCT_DATA_WORDS * BITS_PER_WORD * (ONE * ELEMENTS / BITS),
                    bounded(offset) * ELEMENTS);
 }
 
@@ -668,7 +669,7 @@ inline auto subtractChecked(T a, U b, ErrorFunc&& errorFunc = ErrorFunc())
 template <typename T, typename U>
 inline auto trySubtract(T a, U b) -> kj::Maybe<decltype(a - b)> {
   if (b > a) {
-    return kj::none;
+    return nullptr;
   } else {
     return a - b;
   }
@@ -710,7 +711,7 @@ typedef ByteCountN<BLOB_SIZE_BITS> BlobSize;
 
 constexpr auto MAX_SEGMENT_WORDS = kj::maxValueForBits<SEGMENT_WORD_COUNT_BITS>();
 constexpr auto MAX_LIST_ELEMENTS = kj::maxValueForBits<LIST_ELEMENT_COUNT_BITS>();
-constexpr auto MAX_STRUCT_DATA_WORDS = kj::maxValueForBits<STRUCT_DATA_WORD_COUNT_BITS>();
+constexpr auto MAX_STUCT_DATA_WORDS = kj::maxValueForBits<STRUCT_DATA_WORD_COUNT_BITS>();
 constexpr auto MAX_STRUCT_POINTER_COUNT = kj::maxValueForBits<STRUCT_POINTER_COUNT_BITS>();
 
 typedef uint StructDataBitCount;

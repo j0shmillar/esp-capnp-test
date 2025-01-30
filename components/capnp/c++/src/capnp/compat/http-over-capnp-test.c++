@@ -51,8 +51,8 @@ kj::Promise<void> expectRead(kj::AsyncInputStream& in, kj::StringPtr expected) {
       KJ_FAIL_ASSERT("expected data never sent", expected);
     }
 
-    auto actual = buffer.first(amount);
-    if (actual != expected.first(amount)) {
+    auto actual = buffer.slice(0, amount);
+    if (memcmp(actual.begin(), expected.begin(), actual.size()) != 0) {
       KJ_FAIL_ASSERT("data from stream doesn't match expected", expected, actual);
     }
 
@@ -330,7 +330,7 @@ public:
 
   kj::Promise<kj::Own<kj::AsyncIoStream>> connect() override {
     auto result = KJ_ASSERT_NONNULL(kj::mv(stream));
-    stream = kj::none;
+    stream = nullptr;
     return kj::mv(result);
   }
 
@@ -374,7 +374,7 @@ void runEndToEndTests(kj::Timer& timer, kj::HttpHeaderTable& headerTable,
         break;
     }
 
-    auto writePromise = out->write(step.send.asBytes());
+    auto writePromise = out->write(step.send.begin(), step.send.size());
     auto readPromise = expectRead(*in, step.receive);
     if (!writePromise.poll(waitScope)) {
       if (readPromise.poll(waitScope)) {
@@ -469,7 +469,8 @@ KJ_TEST("HTTP-over-Cap'n-Proto 205 bug with HttpClientAdapter") {
     // A 205 response with no content-length or transfer-encoding is terminated by EOF (but also
     // the body is required to be empty). We don't send the EOF yet, just the response line and
     // empty headers.
-    pipe.ends[1]->write("HTTP/1.1 205 Reset Content\r\n\r\n"_kjb).wait(waitScope);
+    kj::StringPtr resp = "HTTP/1.1 205 Reset Content\r\n\r\n";
+    pipe.ends[1]->write(resp.begin(), resp.size()).wait(waitScope);
   }
 
   // On the client end, we should get a response now!
@@ -501,7 +502,7 @@ public:
 
   kj::Promise<void> request(
       kj::HttpMethod method, kj::StringPtr url, const kj::HttpHeaders& headers,
-      kj::AsyncInputStream& requestBody, Response& response) override {
+      kj::AsyncInputStream& requestBody, Response& response) {
     kj::HttpHeaders respHeaders(headerTable);
     respHeaders.add("X-Foo", "bar");
     fulfiller->fulfill(response.acceptWebSocket(respHeaders));
@@ -527,7 +528,7 @@ void runWebSocketBasicTestCase(
   }
 
   {
-    auto promise = serverWs.send("bar"_kjb);
+    auto promise = serverWs.send("bar"_kj.asBytes());
     auto message = clientWs.receive().wait(waitScope);
     promise.wait(waitScope);
     KJ_ASSERT(message.is<kj::Array<kj::byte>>());
@@ -544,10 +545,11 @@ void runWebSocketBasicTestCase(
   }
 
   {
-    serverWs.disconnect();
+    auto promise = serverWs.disconnect();
     auto receivePromise = clientWs.receive();
     KJ_EXPECT(receivePromise.poll(waitScope));
     KJ_EXPECT_THROW(DISCONNECTED, receivePromise.wait(waitScope));
+    promise.wait(waitScope);
   }
 }
 
@@ -629,7 +631,7 @@ public:
 
   kj::Promise<void> request(
       kj::HttpMethod method, kj::StringPtr url, const kj::HttpHeaders& headers,
-      kj::AsyncInputStream& requestBody, Response& response) override {
+      kj::AsyncInputStream& requestBody, Response& response) {
     called = true;
     return kj::NEVER_DONE;
   }
@@ -655,13 +657,14 @@ KJ_TEST("HttpService isn't destroyed while call outstanding") {
   KJ_EXPECT(!called);
   KJ_EXPECT(!destroyed);
 
-  auto req = service.requestRequest();
+  auto req = service.startRequestRequest();
   auto httpReq = req.initRequest();
   httpReq.setMethod(capnp::HttpMethod::GET);
   httpReq.setUrl("/");
-  auto promise = req.send();
+  auto serverContext = req.send().wait(waitScope).getContext();
   service = nullptr;
 
+  auto promise = serverContext.whenResolved();
   KJ_EXPECT(!promise.poll(waitScope));
 
   KJ_EXPECT(called);
@@ -687,7 +690,7 @@ public:
       kj::HttpService::ConnectResponse& response,
       kj::HttpConnectSettings settings) override {
     response.accept(200, "OK", kj::HttpHeaders(headerTable));
-    return io.write("test"_kjb).then([&io]() mutable {
+    return io.write("test", 4).then([&io]() mutable {
       io.shutdownWrite();
     });
   }
@@ -722,7 +725,7 @@ public:
     return io.tryRead(buffer.begin(), 1, buffer.size()).then(
         [this,&io,buffer](size_t amount) mutable -> kj::Promise<void> {
       if (amount == 0) { return kj::READY_NOW; }
-      return io.write(buffer.first(amount)).then([this,&io,buffer]() mutable -> kj::Promise<void>  {
+      return io.write(buffer.begin(), amount).then([this,&io,buffer]() mutable -> kj::Promise<void>  {
         return manualPumpLoop(buffer, io);
       });
     });
@@ -749,7 +752,7 @@ public:
       kj::HttpService::ConnectResponse& response,
       kj::HttpConnectSettings settings) override {
     auto body = response.reject(500, "Internal Server Error", kj::HttpHeaders(headerTable), 5);
-    return body->write("Error"_kjb).attach(kj::mv(body));
+    return body->write("Error", 5).attach(kj::mv(body));
   }
 
 private:
@@ -766,7 +769,7 @@ KJ_TEST("HTTP-over-Cap'n-Proto Connect with close") {
 
   ByteStreamFactory streamFactory;
   kj::HttpHeaderTable::Builder tableBuilder;
-  HttpOverCapnpFactory factory(streamFactory, tableBuilder, TEST_PEER_OPTIMIZATION_LEVEL);
+  HttpOverCapnpFactory factory(streamFactory, tableBuilder);
   kj::Own<kj::HttpHeaderTable> table = tableBuilder.build();
   ConnectWriteCloseService service(*table);
   kj::HttpServer server(timer, *table, service);
@@ -789,7 +792,7 @@ KJ_TEST("HTTP-over-Cap'n-Proto Connect with close") {
           statusCode,
           kj::str(statusText),
           kj::heap(headers.clone()),
-          kj::none
+          nullptr
         )
       );
     }
@@ -841,7 +844,7 @@ KJ_TEST("HTTP-over-Cap'n-Proto Connect Reject") {
 
   ByteStreamFactory streamFactory;
   kj::HttpHeaderTable::Builder tableBuilder;
-  HttpOverCapnpFactory factory(streamFactory, tableBuilder, TEST_PEER_OPTIMIZATION_LEVEL);
+  HttpOverCapnpFactory factory(streamFactory, tableBuilder);
   kj::Own<kj::HttpHeaderTable> table = tableBuilder.build();
   ConnectRejectService service(*table);
   kj::HttpServer server(timer, *table, service);
@@ -914,7 +917,7 @@ KJ_TEST("HTTP-over-Cap'n-Proto Connect with startTls") {
 
   ByteStreamFactory streamFactory;
   kj::HttpHeaderTable::Builder tableBuilder;
-  HttpOverCapnpFactory factory(streamFactory, tableBuilder, TEST_PEER_OPTIMIZATION_LEVEL);
+  HttpOverCapnpFactory factory(streamFactory, tableBuilder);
   kj::Own<kj::HttpHeaderTable> table = tableBuilder.build();
   ConnectWriteRespService service(*table);
   kj::HttpServer server(timer, *table, service);
@@ -932,12 +935,12 @@ KJ_TEST("HTTP-over-Cap'n-Proto Connect with startTls") {
     kj::Promise<WebSocketResponse> openWebSocket(
       kj::StringPtr url, const kj::HttpHeaders& headers) override { KJ_UNREACHABLE; }
     Request request(kj::HttpMethod method, kj::StringPtr url, const kj::HttpHeaders& headers,
-                  kj::Maybe<uint64_t> expectedBodySize = kj::none) override { KJ_UNREACHABLE; }
+                  kj::Maybe<uint64_t> expectedBodySize = nullptr) override { KJ_UNREACHABLE; }
 
     ConnectRequest connect(kj::StringPtr host, const kj::HttpHeaders& headers,
         kj::HttpConnectSettings settings) override {
-      KJ_IF_SOME(starter, settings.tlsStarter) {
-        starter = [](kj::StringPtr) {
+      KJ_IF_MAYBE(starter, settings.tlsStarter) {
+        *starter = [](kj::StringPtr) {
           return kj::READY_NOW;
         };
       }
@@ -954,7 +957,7 @@ KJ_TEST("HTTP-over-Cap'n-Proto Connect with startTls") {
   auto frontCapnpHttpClient = kj::newHttpClient(*frontCapnpHttpService);
 
   kj::Own<kj::TlsStarterCallback> tlsStarter = kj::heap<kj::TlsStarterCallback>();
-  kj::HttpConnectSettings settings = { .useTls = false, .tlsStarter = kj::none };
+  kj::HttpConnectSettings settings = { .useTls = false };
   settings.tlsStarter = tlsStarter;
 
   auto request = frontCapnpHttpClient->connect(
@@ -968,7 +971,7 @@ KJ_TEST("HTTP-over-Cap'n-Proto Connect with startTls") {
     KJ_ASSERT(status.statusText == "OK"_kj);
 
     return KJ_ASSERT_NONNULL(*tlsStarter)("example.com").then([io = kj::mv(io)]() mutable {
-      return io->write("hello"_kjb).then([io = kj::mv(io)]() mutable {
+      return io->write("hello", 5).then([io = kj::mv(io)]() mutable {
         auto buffer = kj::heapArray<byte>(5);
         return io->tryRead(buffer.begin(), 5, 5).then(
             [io = kj::mv(io), buffer = kj::mv(buffer)](size_t) mutable {

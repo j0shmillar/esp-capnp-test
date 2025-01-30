@@ -241,26 +241,14 @@ KJ_TEST("round-trip invalid UTF-16") {
 }
 
 KJ_TEST("EncodingResult as a Maybe") {
-  {
-    auto result = encodeUtf16("\x80");
-    KJ_EXPECT(result != nullptr);  // It has bytes ...
-    KJ_EXPECT(result == kj::none); // But an error.
-    KJ_IF_SOME(unused, result) {
-      (void)unused;
-      KJ_FAIL_EXPECT("expected failure");
-    }
+  KJ_IF_MAYBE(result, encodeUtf16("\x80")) {
+    KJ_FAIL_EXPECT("expected failure");
   }
 
-  {
-    auto result = encodeUtf16("foo");
-    KJ_EXPECT(result != nullptr);
-    KJ_EXPECT(result != kj::none);
-    KJ_IF_SOME(unused, result) {
-      (void)unused;
-      // good
-    } else {
+  KJ_IF_MAYBE(result, encodeUtf16("foo")) {
+    // good
+  } else {
     KJ_FAIL_EXPECT("expected success");
-    }
   }
 
   KJ_EXPECT(KJ_ASSERT_NONNULL(decodeUtf16(u"foo")) == "foo");
@@ -331,7 +319,7 @@ KJ_TEST("URI encoding/decoding") {
     auto bytesWithNul = decodeBinaryUriComponent(encodeUriComponent(bytes), true);
     KJ_ASSERT(bytesWithNul.size() == 4);
     KJ_EXPECT(bytesWithNul[3] == '\0');
-    KJ_EXPECT(bytesWithNul.first(3) == bytes);
+    KJ_EXPECT(bytesWithNul.slice(0, 3) == bytes);
   }
 }
 

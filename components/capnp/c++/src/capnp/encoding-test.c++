@@ -647,10 +647,12 @@ TEST(Encoding, ListUpgrade) {
   {
     kj::Maybe<kj::Exception> e = kj::runCatchingExceptions([&]() {
       reader.getAnyPointerField().getAs<List<uint32_t>>();
+#if !KJ_NO_EXCEPTIONS
       ADD_FAILURE() << "Should have thrown an exception.";
+#endif
     });
 
-    KJ_EXPECT(e != kj::none, "Should have thrown an exception.");
+    KJ_EXPECT(e != nullptr, "Should have thrown an exception.");
   }
 
   {
@@ -753,10 +755,12 @@ TEST(Encoding, BitListUpgrade) {
   {
     kj::Maybe<kj::Exception> e = kj::runCatchingExceptions([&]() {
       root.getAnyPointerField().getAs<List<test::TestLists::Struct1>>();
+#if !KJ_NO_EXCEPTIONS
       ADD_FAILURE() << "Should have thrown an exception.";
+#endif
     });
 
-    KJ_EXPECT(e != kj::none, "Should have thrown an exception.");
+    KJ_EXPECT(e != nullptr, "Should have thrown an exception.");
   }
 
   auto reader = root.asReader();
@@ -764,10 +768,12 @@ TEST(Encoding, BitListUpgrade) {
   {
     kj::Maybe<kj::Exception> e = kj::runCatchingExceptions([&]() {
       reader.getAnyPointerField().getAs<List<test::TestLists::Struct1>>();
+#if !KJ_NO_EXCEPTIONS
       ADD_FAILURE() << "Should have thrown an exception.";
+#endif
     });
 
-    KJ_EXPECT(e != kj::none, "Should have thrown an exception.");
+    KJ_EXPECT(e != nullptr, "Should have thrown an exception.");
   }
 }
 

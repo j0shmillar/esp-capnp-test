@@ -94,7 +94,7 @@ public:
     DeclParserResult(Orphan<Declaration>&& decl, const DeclParser& memberParser)
         : decl(kj::mv(decl)), memberParser(memberParser) {}
     explicit DeclParserResult(Orphan<Declaration>&& decl)
-        : decl(kj::mv(decl)), memberParser(kj::none) {}
+        : decl(kj::mv(decl)), memberParser(nullptr) {}
   };
 
   struct Parsers {

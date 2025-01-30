@@ -63,7 +63,7 @@ public:
     return false;
 
 #else
-    int pipeFds[2]{};
+    int pipeFds[2];
     KJ_SYSCALL(pipe(pipeFds));
     pid_t child = fork();
     if (child == 0) {
@@ -76,7 +76,7 @@ public:
       close(pipeFds[1]);
 
       // Read child error messages into our local buffer.
-      char buf[1024]{};
+      char buf[1024];
       for (;;) {
         ssize_t n = read(pipeFds[0], buf, sizeof(buf));
         if (n < 0) {
@@ -131,10 +131,11 @@ public:
     text += "recoverable exception: ";
     auto what = str(exception);
     // Discard the stack trace.
-    KJ_IF_SOME(end, what.find("\nstack: ")) {
-      text.append(what.cStr(), what.cStr()+end);
-    } else {
+    const char* end = strstr(what.cStr(), "\nstack: ");
+    if (end == nullptr) {
       text += what.cStr();
+    } else {
+      text.append(what.cStr(), end);
     }
     text += '\n';
     flush();
@@ -144,23 +145,28 @@ public:
     text += "fatal exception: ";
     auto what = str(exception);
     // Discard the stack trace.
-    KJ_IF_SOME(end, what.find("\nstack: ")) {
-      text.append(what.cStr(), what.cStr()+end);
-    } else {
+    const char* end = strstr(what.cStr(), "\nstack: ");
+    if (end == nullptr) {
       text += what.cStr();
+    } else {
+      text.append(what.cStr(), end);
     }
     text += '\n';
     flush();
+#if KJ_NO_EXCEPTIONS
+    if (outputPipe >= 0) {
+      // This is a child process.  We got what we want, now exit quickly without writing any
+      // additional messages, with a status code that the parent will interpret as "exited in the
+      // way we expected".
+      _exit(74);
+    }
+#else
     throw MockException();
+#endif
   }
 
   void logMessage(LogSeverity severity, const char* file, int line, int contextDepth,
                   String&& text) override {
-    if (text.contains("To symbolize stack traces, install it in your $PATH")) {
-      // Ignore warning about LLVM_SYMBOLIZER not being available.
-      return;
-    }
-
     this->text += "log message: ";
     text = str(file, ":", line, ":+", contextDepth, ": ", severity, ": ", mv(text));
     this->text.append(text.begin(), text.end());
@@ -178,16 +184,20 @@ public:
   EXPECT_EQ(expText, text); \
 } while(0)
 
+#if KJ_NO_EXCEPTIONS
+#define EXPECT_FATAL(code) if (mockCallback.forkForDeathTest()) { code; abort(); }
+#else
 #define EXPECT_FATAL(code) \
   try { code; KJ_FAIL_EXPECT("expected exception"); } \
   catch (MockException e) {} \
   catch (...) { KJ_FAIL_EXPECT("wrong exception"); }
+#endif
 
 std::string fileLine(std::string file, int line) {
   file = trimSourceFilename(file.c_str()).cStr();
 
   file += ':';
-  char buffer[32]{};
+  char buffer[32];
   snprintf(buffer, sizeof(buffer), "%d", line);
   file += buffer;
   return file;
@@ -291,10 +301,10 @@ TEST(Debug, Catch) {
       line = __LINE__; KJ_FAIL_ASSERT("foo") { break; }
     });
 
-    KJ_IF_SOME(e, exception) {
-      String what = str(e);
-      KJ_IF_SOME(eol, what.findFirst('\n')) {
-        what = kj::str(what.first(eol));
+    KJ_IF_MAYBE(e, exception) {
+      String what = str(*e);
+      KJ_IF_MAYBE(eol, what.findFirst('\n')) {
+        what = kj::str(what.slice(0, *eol));
       }
       std::string text(what.cStr());
       EXPECT_EQ(fileLine(__FILE__, line) + ": failed: foo", text);
@@ -303,16 +313,17 @@ TEST(Debug, Catch) {
     }
   }
 
+#if !KJ_NO_EXCEPTIONS
   {
     // Catch fatal as kj::Exception.
     Maybe<Exception> exception = kj::runCatchingExceptions([&](){
       line = __LINE__; KJ_FAIL_ASSERT("foo");
     });
 
-    KJ_IF_SOME(e, exception) {
-      String what = str(e);
-      KJ_IF_SOME(eol, what.findFirst('\n')) {
-        what = kj::str(what.first(eol));
+    KJ_IF_MAYBE(e, exception) {
+      String what = str(*e);
+      KJ_IF_MAYBE(eol, what.findFirst('\n')) {
+        what = kj::str(what.slice(0, *eol));
       }
       std::string text(what.cStr());
       EXPECT_EQ(fileLine(__FILE__, line) + ": failed: foo", text);
@@ -329,14 +340,15 @@ TEST(Debug, Catch) {
     } catch (const std::exception& e) {
       kj::StringPtr what = e.what();
       std::string text;
-      KJ_IF_SOME(eol, what.findFirst('\n')) {
-        text.assign(what.cStr(), eol);
+      KJ_IF_MAYBE(eol, what.findFirst('\n')) {
+        text.assign(what.cStr(), *eol);
       } else {
         text.assign(what.cStr());
       }
       EXPECT_EQ(fileLine(__FILE__, line) + ": failed: foo", text);
     }
   }
+#endif
 }
 
 int mockSyscall(int i, int error = 0) {

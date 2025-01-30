@@ -31,9 +31,9 @@ TEST(OneOf, Basic) {
   EXPECT_FALSE(var.is<int>());
   EXPECT_FALSE(var.is<float>());
   EXPECT_FALSE(var.is<String>());
-  EXPECT_TRUE(var.tryGet<int>() == kj::none);
-  EXPECT_TRUE(var.tryGet<float>() == kj::none);
-  EXPECT_TRUE(var.tryGet<String>() == kj::none);
+  EXPECT_TRUE(var.tryGet<int>() == nullptr);
+  EXPECT_TRUE(var.tryGet<float>() == nullptr);
+  EXPECT_TRUE(var.tryGet<String>() == nullptr);
 
   var.init<int>(123);
 
@@ -42,14 +42,14 @@ TEST(OneOf, Basic) {
   EXPECT_FALSE(var.is<String>());
 
   EXPECT_EQ(123, var.get<int>());
-#ifdef KJ_DEBUG
+#if !KJ_NO_EXCEPTIONS && defined(KJ_DEBUG)
   EXPECT_ANY_THROW(var.get<float>());
   EXPECT_ANY_THROW(var.get<String>());
 #endif
 
   EXPECT_EQ(123, KJ_ASSERT_NONNULL(var.tryGet<int>()));
-  EXPECT_TRUE(var.tryGet<float>() == kj::none);
-  EXPECT_TRUE(var.tryGet<String>() == kj::none);
+  EXPECT_TRUE(var.tryGet<float>() == nullptr);
+  EXPECT_TRUE(var.tryGet<String>() == nullptr);
 
   var.init<String>(kj::str("foo"));
 
@@ -59,8 +59,8 @@ TEST(OneOf, Basic) {
 
   EXPECT_EQ("foo", var.get<String>());
 
-  EXPECT_TRUE(var.tryGet<int>() == kj::none);
-  EXPECT_TRUE(var.tryGet<float>() == kj::none);
+  EXPECT_TRUE(var.tryGet<int>() == nullptr);
+  EXPECT_TRUE(var.tryGet<float>() == nullptr);
   EXPECT_EQ("foo", KJ_ASSERT_NONNULL(var.tryGet<String>()));
 
   OneOf<int, float, String> var2 = kj::mv(var);
@@ -155,11 +155,11 @@ TEST(OneOf, Maybe) {
   Maybe<OneOf<int, float>> var;
   var = OneOf<int, float>(123);
 
-  KJ_IF_SOME(v, var) {
+  KJ_IF_MAYBE(v, var) {
     // At one time this failed to compile. Note that a Maybe<OneOf<...>> isn't necessarily great
     // style -- you might be better off with an explicit OneOf<Empty, ...>. Nevertheless, it should
     // compile.
-    KJ_SWITCH_ONEOF(v) {
+    KJ_SWITCH_ONEOF(*v) {
       KJ_CASE_ONEOF(i, int) {
         KJ_EXPECT(i == 123);
       }
@@ -207,44 +207,6 @@ KJ_TEST("OneOf copy/move from alternative variants") {
     KJ_ASSERT((dst.is<OneOf<int, float>>()));
     KJ_ASSERT((dst.get<OneOf<int, float>>().is<float>()));
     KJ_EXPECT((dst.get<OneOf<int, float>>().get<float>() == 23.5));
-  }
-}
-
-KJ_TEST("OneOf equality") {
-  {
-    OneOf<int, bool> a = 5;
-    OneOf<int, bool> b = 5;
-    KJ_EXPECT(a == b);
-  }
-  {
-    OneOf<int, bool> a = false;
-    OneOf<int, bool> b = false;
-    KJ_EXPECT(a == b);
-  }
-  {
-    OneOf<int, bool> a = true;
-    OneOf<int, bool> b = false;
-    KJ_EXPECT(a != b);
-  }
-  {
-    OneOf<int, bool> a = 0;
-    OneOf<int, bool> b = false;
-    KJ_EXPECT(a != b);
-  }
-  {
-    OneOf<int, bool> a = 1;
-    OneOf<int, bool> b = true;
-    KJ_EXPECT(a != b);
-  }
-  {
-    OneOf<int, bool> a = 5;
-    OneOf<int, bool> b = 6;
-    KJ_EXPECT(a != b);
-  }
-  {
-    OneOf<int, bool> a = 5;
-    OneOf<int, bool> b = true;
-    KJ_EXPECT(a != b);
   }
 }
 

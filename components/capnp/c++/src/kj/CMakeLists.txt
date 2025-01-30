@@ -13,7 +13,6 @@ set(kj_sources_lite
   mutex.c++
   string.c++
   source-location.c++
-  glob-filter.c++
   hash.c++
   table.c++
   thread.c++
@@ -50,7 +49,6 @@ set(kj_headers
   string.h
   string-tree.h
   source-location.h
-  glob-filter.h
   hash.h
   table.h
   map.h
@@ -64,6 +62,7 @@ set(kj_headers
   function.h
   mutex.h
   thread.h
+  threadlocal.h
   filesystem.h
   time.h
   main.h
@@ -79,7 +78,8 @@ set(kj-std_headers
 )
 add_library(kj ${kj_sources})
 add_library(CapnProto::kj ALIAS kj)
-target_compile_features(kj PUBLIC cxx_std_20)
+# TODO(cleanup): Use cxx_std_14 once it's safe to require cmake 3.8.
+target_compile_features(kj PUBLIC cxx_generic_lambdas)
 
 if(UNIX AND NOT ANDROID)
   target_link_libraries(kj PUBLIC pthread)
@@ -204,9 +204,6 @@ if(WITH_OPENSSL)
 
     target_compile_definitions(kj-tls PRIVATE KJ_HAS_OPENSSL)
     target_link_libraries(kj-tls PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-    if(WIN32)
-      target_link_libraries(kj-tls PUBLIC crypt32)
-    endif()
 
     # Ensure the library has a version set to match autotools build
     set_target_properties(kj-tls PROPERTIES VERSION ${VERSION})
@@ -256,8 +253,8 @@ if(BUILD_TESTING)
     io-test.c++
     mutex-test.c++
     time-test.c++
+    threadlocal-test.c++
     test-test.c++
-    glob-filter-test.c++
     std/iostream-test.c++
   )
   # TODO: Link with librt on Solaris for sched_yield

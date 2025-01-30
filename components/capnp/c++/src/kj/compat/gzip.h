@@ -58,7 +58,7 @@ public:
   ~GzipInputStream() noexcept(false);
   KJ_DISALLOW_COPY_AND_MOVE(GzipInputStream);
 
-  size_t tryRead(ArrayPtr<byte> buffer, size_t minBytes) override;
+  size_t tryRead(void* buffer, size_t minBytes, size_t maxBytes) override;
 
 private:
   InputStream& inner;
@@ -67,7 +67,7 @@ private:
 
   byte buffer[_::KJ_GZ_BUF_SIZE];
 
-  size_t readImpl(ArrayPtr<byte> buffer, size_t minBytes, size_t alreadyRead);
+  size_t readImpl(byte* buffer, size_t minBytes, size_t maxBytes, size_t alreadyRead);
 };
 
 class GzipOutputStream final: public OutputStream {
@@ -79,8 +79,7 @@ public:
   ~GzipOutputStream() noexcept(false);
   KJ_DISALLOW_COPY_AND_MOVE(GzipOutputStream);
 
-  void write(ArrayPtr<const byte> data) override;
-
+  void write(const void* buffer, size_t size) override;
   using OutputStream::write;
 
   inline void flush() {
@@ -120,7 +119,7 @@ public:
   GzipAsyncOutputStream(AsyncOutputStream& inner, decltype(DECOMPRESS));
   KJ_DISALLOW_COPY_AND_MOVE(GzipAsyncOutputStream);
 
-  Promise<void> write(ArrayPtr<const byte> buffer) override;
+  Promise<void> write(const void* buffer, size_t size) override;
   Promise<void> write(ArrayPtr<const ArrayPtr<const byte>> pieces) override;
 
   Promise<void> whenWriteDisconnected() override { return inner.whenWriteDisconnected(); }

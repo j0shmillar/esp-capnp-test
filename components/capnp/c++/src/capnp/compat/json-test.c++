@@ -21,7 +21,6 @@
 
 #include "json.h"
 #include <capnp/test-util.h>
-#include <capnp/message.h>
 #include <capnp/compat/json.capnp.h>
 #include <capnp/compat/json-test.capnp.h>
 #include <kj/debug.h>
@@ -196,26 +195,6 @@ KJ_TEST("encode union") {
   KJ_EXPECT(json.encode(root) == "{\"before\":\"a\",\"middle\":44,\"bar\":321,\"after\":\"c\"}");
 }
 
-KJ_TEST("null pointer field") {
-  // Pointer fields are to be treated as missing if they're set to null in JSON
-
-  JsonCodec json;
-  MallocMessageBuilder message;
-  auto root = message.initRoot<TestJsonAnnotations>();
-  auto jsonMessage = R"({
-  "names-can_contain!anything Really": null,
-  "dependency": null,
-  "enums": null,
-  "testBase64": null
-  })"_kj;
-  json.decode(jsonMessage, root);
-
-  KJ_EXPECT(!root.hasSomeField());
-  KJ_EXPECT(!root.hasDependency());
-  KJ_EXPECT(!root.hasEnums());
-  KJ_EXPECT(!root.hasTestBase64());
-}
-
 KJ_TEST("decode all types") {
   JsonCodec json;
   json.setHasMode(HasMode::NON_DEFAULT);
@@ -317,6 +296,10 @@ KJ_TEST("decode all types") {
   CASE_NO_ROUNDTRIP(R"({"textField":"foo\u1234bar"})",
       kj::str(u8"foo\u1234bar") == root.getTextField());
 
+  CASE_THROW_RECOVERABLE(R"({"structField":null})", "Expected object value");
+  CASE_THROW_RECOVERABLE(R"({"structList":null})", "Expected list value");
+  CASE_THROW_RECOVERABLE(R"({"boolList":null})", "Expected list value");
+  CASE_THROW_RECOVERABLE(R"({"structList":[null]})", "Expected object value");
   CASE_THROW_RECOVERABLE(R"({"int64Field":"177a"})", "String does not contain valid");
   CASE_THROW_RECOVERABLE(R"({"uInt64Field":"177a"})", "String does not contain valid");
   CASE_THROW_RECOVERABLE(R"({"float64Field":"177a"})", "String does not contain valid");
@@ -936,13 +919,12 @@ R"({
 
 class PrefixAdder: public JsonCodec::Handler<capnp::Text> {
 public:
-  void encode(const JsonCodec& codec, capnp::Text::Reader input,
-              JsonValue::Builder output) const override {
+  void encode(const JsonCodec& codec, capnp::Text::Reader input, JsonValue::Builder output) const {
     output.setString(kj::str("add-prefix-", input));
   }
 
   Orphan<capnp::Text> decode(const JsonCodec& codec, JsonValue::Reader input,
-                             Orphanage orphanage) const override {
+                             Orphanage orphanage) const {
     return orphanage.newOrphanCopy(capnp::Text::Reader(input.getString().slice(11)));
   }
 };
@@ -999,8 +981,8 @@ KJ_TEST("rename fields") {
 
     root.setCustomFieldHandler("waldo");
 
-    root.setTestBase64("fred"_kjb);
-    root.setTestHex("plugh"_kjb);
+    root.setTestBase64("fred"_kj.asBytes());
+    root.setTestHex("plugh"_kj.asBytes());
 
     root.getBUnion().setBar(678);
 
@@ -1045,45 +1027,6 @@ KJ_TEST("base64 union encoded correctly") {
   root.initFoo(5);
 
   KJ_EXPECT(json.encode(root) == "{\"foo\": \"AAAAAAA=\"}", json.encode(root));
-}
-
-KJ_TEST("JSON encode bench") {
-  // Example test based on basic json encoding benchmark.
-  capnp::JsonCodec json;
-
-  doBenchmark([&]() {
-    KJ_EXPECT(json.encode(VOID) == "null");
-    KJ_EXPECT(json.encode(true) == "true");
-    KJ_EXPECT(json.encode(false) == "false");
-    KJ_EXPECT(json.encode(123) == "123");
-    KJ_EXPECT(json.encode(-5.5) == "-5.5");
-    KJ_EXPECT(json.encode(Text::Reader("foo")) == "\"foo\"");
-    KJ_EXPECT(json.encode(Text::Reader("ab\"cd\\ef\x03")) == "\"ab\\\"cd\\\\ef\\u0003\"");
-    KJ_EXPECT(json.encode(test::TestEnum::CORGE) == "\"corge\"");
-
-    json.setPrettyPrint(false);
-    kj::byte bytes[] = {12, 34, 56};
-    KJ_EXPECT(json.encode(capnp::Data::Reader(bytes, 3)) == "[12,34,56]");
-
-    json.setPrettyPrint(true);
-    KJ_EXPECT(json.encode(capnp::Data::Reader(bytes, 3)) == "[12, 34, 56]");
-  });
-}
-
-KJ_TEST("JSON parse bench") {
-  MallocMessageBuilder message;
-  auto root = message.getRoot<TestAllTypes>();
-  initTestMessage(root);
-
-  JsonCodec json;
-  auto encoded = json.encode(root);
-
-  doBenchmark([&]() {
-    MallocMessageBuilder decodedMessage;
-    auto decodedRoot = decodedMessage.initRoot<TestAllTypes>();
-    json.decode(encoded, decodedRoot);
-    KJ_EXPECT(root.toString().flatten() == decodedRoot.toString().flatten());
-  });
 }
 
 }  // namespace

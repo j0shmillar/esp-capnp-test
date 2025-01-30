@@ -21,7 +21,6 @@
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
-#include "kj/array.h"
 #endif
 
 #include "serialize.h"
@@ -114,10 +113,10 @@ TEST(Serialize, FlatArray) {
   {
     // Test expectedSizeInWordsFromPrefix(). We pass in a copy of the slice so that valgrind can
     // detect out-of-bounds access.
-    EXPECT_EQ(1, expectedSizeInWordsFromPrefix(copyWords(serialized.first(0))));
+    EXPECT_EQ(1, expectedSizeInWordsFromPrefix(copyWords(serialized.slice(0, 0))));
     for (uint i = 1; i <= serialized.size(); i++) {
       EXPECT_EQ(serialized.size(),
-          expectedSizeInWordsFromPrefix(copyWords(serialized.first(i))));
+          expectedSizeInWordsFromPrefix(copyWords(serialized.slice(0, i))));
     }
   }
 }
@@ -149,14 +148,14 @@ TEST(Serialize, FlatArrayOddSegmentCount) {
 
     // Segment table is 4 words, so with fewer words we'll have incomplete information.
     for (uint i = 0; i < 4; i++) {
-      size_t expectedSize = expectedSizeInWordsFromPrefix(copyWords(serialized.first(i)));
+      size_t expectedSize = expectedSizeInWordsFromPrefix(copyWords(serialized.slice(0, i)));
       EXPECT_LT(expectedSize, serialized.size());
       EXPECT_GT(expectedSize, i);
     }
     // After that, we get the exact length.
     for (uint i = 4; i <= serialized.size(); i++) {
       EXPECT_EQ(serialized.size(),
-          expectedSizeInWordsFromPrefix(copyWords(serialized.first(i))));
+          expectedSizeInWordsFromPrefix(copyWords(serialized.slice(0, i))));
     }
   }
 }
@@ -188,14 +187,14 @@ TEST(Serialize, FlatArrayEvenSegmentCount) {
 
     // Segment table is 6 words, so with fewer words we'll have incomplete information.
     for (uint i = 0; i < 6; i++) {
-      size_t expectedSize = expectedSizeInWordsFromPrefix(copyWords(serialized.first(i)));
+      size_t expectedSize = expectedSizeInWordsFromPrefix(copyWords(serialized.slice(0, i)));
       EXPECT_LT(expectedSize, serialized.size());
       EXPECT_GT(expectedSize, i);
     }
     // After that, we get the exact length.
     for (uint i = 6; i <= serialized.size(); i++) {
       EXPECT_EQ(serialized.size(),
-          expectedSizeInWordsFromPrefix(copyWords(serialized.first(i))));
+          expectedSizeInWordsFromPrefix(copyWords(serialized.slice(0, i))));
     }
   }
 }
@@ -208,11 +207,10 @@ public:
         lazy(lazy) {}
   ~TestInputStream() {}
 
-  size_t tryRead(kj::ArrayPtr<byte> buffer, size_t minBytes) override {
-    size_t maxBytes = buffer.size();
+  size_t tryRead(void* buffer, size_t minBytes, size_t maxBytes) override {
     KJ_ASSERT(maxBytes <= size_t(end - pos), "Overran end of stream.");
     size_t amount = lazy ? minBytes : maxBytes;
-    memcpy(buffer.begin(), pos, amount);
+    memcpy(buffer, pos, amount);
     pos += amount;
     return amount;
   }
@@ -327,8 +325,8 @@ public:
   TestOutputStream() {}
   ~TestOutputStream() {}
 
-  void write(kj::ArrayPtr<const byte> data) override {
-    this->data.append(data.asChars().begin(), data.size());
+  void write(const void* buffer, size_t size) override {
+    data.append(reinterpret_cast<const char*>(buffer), size);
   }
 
   bool dataEquals(kj::ArrayPtr<const word> other) {
@@ -406,7 +404,7 @@ TEST(Serialize, FileDescriptors) {
 #else
   char filename[] = "/tmp/capnproto-serialize-test-XXXXXX";
 #endif
-  kj::OwnFd tmpfile(mkstemp(filename));
+  kj::AutoCloseFd tmpfile(mkstemp(filename));
   ASSERT_GE(tmpfile.get(), 0);
 
 #if !_WIN32
@@ -451,10 +449,12 @@ TEST(Serialize, RejectTooManySegments) {
 
   kj::Maybe<kj::Exception> e = kj::runCatchingExceptions([&]() {
     InputStreamMessageReader reader(input);
+#if !KJ_NO_EXCEPTIONS
     ADD_FAILURE() << "Should have thrown an exception.";
+#endif
   });
 
-  KJ_EXPECT(e != kj::none, "Should have thrown an exception.");
+  KJ_EXPECT(e != nullptr, "Should have thrown an exception.");
 }
 
 #if !__MINGW32__  // Inexplicably crashes when exception is thrown from constructor.
@@ -470,27 +470,14 @@ TEST(Serialize, RejectHugeMessage) {
 
   kj::Maybe<kj::Exception> e = kj::runCatchingExceptions([&]() {
     InputStreamMessageReader reader(input, options);
+#if !KJ_NO_EXCEPTIONS
     ADD_FAILURE() << "Should have thrown an exception.";
+#endif
   });
 
-  KJ_EXPECT(e != kj::none, "Should have thrown an exception.");
+  KJ_EXPECT(e != nullptr, "Should have thrown an exception.");
 }
 #endif  // !__MINGW32__
-
-TEST(Serialize, SegmentsTable) {
-  TestMessageBuilder builder(1);
-  initTestMessage(builder.initRoot<TestAllTypes>());
-  auto serialized = messageToFlatArray(builder);
-
-  auto segments = builder.getSegmentsForOutput();
-  auto table = serializeSegmentTable(segments);
-  
-  auto message = kj::heapArrayBuilder<kj::byte>(serialized.asBytes().size());
-  message.addAll(table.asBytes());
-  for (auto segment: segments) message.addAll(segment.asBytes());
-
-  KJ_EXPECT(serialized.asBytes() == message.asPtr());
-}
 
 // TODO(test):  Test error cases.
 

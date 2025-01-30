@@ -39,7 +39,7 @@ public:
   ~PackedInputStream() noexcept(false);
 
   // implements InputStream ------------------------------------------
-  size_t tryRead(kj::ArrayPtr<byte> buffer, size_t minBytes) override;
+  size_t tryRead(void* buffer, size_t minBytes, size_t maxBytes) override;
   void skip(size_t bytes) override;
 
 private:
@@ -54,7 +54,7 @@ public:
   ~PackedOutputStream() noexcept(false);
 
   // implements OutputStream -----------------------------------------
-  void write(kj::ArrayPtr<const byte> data) override;
+  void write(const void* buffer, size_t bytes) override;
 
 private:
   kj::BufferedOutputStream& inner;
@@ -79,7 +79,7 @@ public:
   // Note that if you want to reuse the descriptor after the reader is destroyed, you'll need to
   // seek it, since otherwise the position is unspecified.
 
-  PackedFdMessageReader(kj::OwnFd fd, ReaderOptions options = ReaderOptions(),
+  PackedFdMessageReader(kj::AutoCloseFd fd, ReaderOptions options = ReaderOptions(),
                         kj::ArrayPtr<word> scratchSpace = nullptr);
   // Read a message from a file descriptor, taking ownership of the descriptor.
 

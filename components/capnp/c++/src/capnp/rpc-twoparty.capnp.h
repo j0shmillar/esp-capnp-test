@@ -11,7 +11,7 @@
 
 #ifndef CAPNP_VERSION
 #error "CAPNP_VERSION is not defined, is capnp/generated-header-support.h missing?"
-#elif CAPNP_VERSION != 2000000
+#elif CAPNP_VERSION != 1000002
 #error "Version mismatch between generated code and library headers.  You must use the same version of the Cap'n Proto compiler and library."
 #endif
 
@@ -28,9 +28,9 @@ enum class Side_9fd69ebc87b9719c: uint16_t {
 };
 CAPNP_DECLARE_ENUM(Side, 9fd69ebc87b9719c);
 CAPNP_DECLARE_SCHEMA(d20b909fee733a8e);
-CAPNP_DECLARE_SCHEMA(b7e329e92fda637d);
-CAPNP_DECLARE_SCHEMA(9539708bffa85a5d);
-CAPNP_DECLARE_SCHEMA(e8e97b3b9f049b21);
+CAPNP_DECLARE_SCHEMA(b88d09a9c5f39817);
+CAPNP_DECLARE_SCHEMA(89f389b6fd4082c1);
+CAPNP_DECLARE_SCHEMA(b47f4979672cb59d);
 CAPNP_DECLARE_SCHEMA(95b29059097fca83);
 CAPNP_DECLARE_SCHEMA(9d263a3630b7ebee);
 
@@ -58,45 +58,45 @@ struct VatId {
   };
 };
 
-struct ThirdPartyCompletion {
-  ThirdPartyCompletion() = delete;
+struct ProvisionId {
+  ProvisionId() = delete;
 
   class Reader;
   class Builder;
   class Pipeline;
 
   struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(b7e329e92fda637d, 1, 0)
+    CAPNP_DECLARE_STRUCT_HEADER(b88d09a9c5f39817, 1, 0)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
 
-struct ThirdPartyToAwait {
-  ThirdPartyToAwait() = delete;
+struct RecipientId {
+  RecipientId() = delete;
 
   class Reader;
   class Builder;
   class Pipeline;
 
   struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(9539708bffa85a5d, 0, 0)
+    CAPNP_DECLARE_STRUCT_HEADER(89f389b6fd4082c1, 0, 0)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
   };
 };
 
-struct ThirdPartyToContact {
-  ThirdPartyToContact() = delete;
+struct ThirdPartyCapId {
+  ThirdPartyCapId() = delete;
 
   class Reader;
   class Builder;
   class Pipeline;
 
   struct _capnpPrivate {
-    CAPNP_DECLARE_STRUCT_HEADER(e8e97b3b9f049b21, 0, 0)
+    CAPNP_DECLARE_STRUCT_HEADER(b47f4979672cb59d, 0, 0)
     #if !CAPNP_LITE
     static constexpr ::capnp::_::RawBrandedSchema const* brand() { return &schema->defaultBrand; }
     #endif  // !CAPNP_LITE
@@ -211,9 +211,9 @@ private:
 };
 #endif  // !CAPNP_LITE
 
-class ThirdPartyCompletion::Reader {
+class ProvisionId::Reader {
 public:
-  typedef ThirdPartyCompletion Reads;
+  typedef ProvisionId Reads;
 
   Reader() = default;
   inline explicit Reader(::capnp::_::StructReader base): _reader(base) {}
@@ -242,9 +242,9 @@ private:
   friend class ::capnp::Orphanage;
 };
 
-class ThirdPartyCompletion::Builder {
+class ProvisionId::Builder {
 public:
-  typedef ThirdPartyCompletion Builds;
+  typedef ProvisionId Builds;
 
   Builder() = delete;  // Deleted to discourage incorrect usage.
                        // You can explicitly initialize to nullptr instead.
@@ -271,9 +271,9 @@ private:
 };
 
 #if !CAPNP_LITE
-class ThirdPartyCompletion::Pipeline {
+class ProvisionId::Pipeline {
 public:
-  typedef ThirdPartyCompletion Pipelines;
+  typedef ProvisionId Pipelines;
 
   inline Pipeline(decltype(nullptr)): _typeless(nullptr) {}
   inline explicit Pipeline(::capnp::AnyPointer::Pipeline&& typeless)
@@ -287,9 +287,9 @@ private:
 };
 #endif  // !CAPNP_LITE
 
-class ThirdPartyToAwait::Reader {
+class RecipientId::Reader {
 public:
-  typedef ThirdPartyToAwait Reads;
+  typedef RecipientId Reads;
 
   Reader() = default;
   inline explicit Reader(::capnp::_::StructReader base): _reader(base) {}
@@ -316,9 +316,9 @@ private:
   friend class ::capnp::Orphanage;
 };
 
-class ThirdPartyToAwait::Builder {
+class RecipientId::Builder {
 public:
-  typedef ThirdPartyToAwait Builds;
+  typedef RecipientId Builds;
 
   Builder() = delete;  // Deleted to discourage incorrect usage.
                        // You can explicitly initialize to nullptr instead.
@@ -342,9 +342,9 @@ private:
 };
 
 #if !CAPNP_LITE
-class ThirdPartyToAwait::Pipeline {
+class RecipientId::Pipeline {
 public:
-  typedef ThirdPartyToAwait Pipelines;
+  typedef RecipientId Pipelines;
 
   inline Pipeline(decltype(nullptr)): _typeless(nullptr) {}
   inline explicit Pipeline(::capnp::AnyPointer::Pipeline&& typeless)
@@ -358,9 +358,9 @@ private:
 };
 #endif  // !CAPNP_LITE
 
-class ThirdPartyToContact::Reader {
+class ThirdPartyCapId::Reader {
 public:
-  typedef ThirdPartyToContact Reads;
+  typedef ThirdPartyCapId Reads;
 
   Reader() = default;
   inline explicit Reader(::capnp::_::StructReader base): _reader(base) {}
@@ -387,9 +387,9 @@ private:
   friend class ::capnp::Orphanage;
 };
 
-class ThirdPartyToContact::Builder {
+class ThirdPartyCapId::Builder {
 public:
-  typedef ThirdPartyToContact Builds;
+  typedef ThirdPartyCapId Builds;
 
   Builder() = delete;  // Deleted to discourage incorrect usage.
                        // You can explicitly initialize to nullptr instead.
@@ -413,9 +413,9 @@ private:
 };
 
 #if !CAPNP_LITE
-class ThirdPartyToContact::Pipeline {
+class ThirdPartyCapId::Pipeline {
 public:
-  typedef ThirdPartyToContact Pipelines;
+  typedef ThirdPartyCapId Pipelines;
 
   inline Pipeline(decltype(nullptr)): _typeless(nullptr) {}
   inline explicit Pipeline(::capnp::AnyPointer::Pipeline&& typeless)
@@ -627,16 +627,16 @@ inline void VatId::Builder::setSide( ::capnp::rpc::twoparty::Side value) {
       ::capnp::bounded<0>() * ::capnp::ELEMENTS, value);
 }
 
-inline  ::uint32_t ThirdPartyCompletion::Reader::getJoinId() const {
+inline  ::uint32_t ProvisionId::Reader::getJoinId() const {
   return _reader.getDataField< ::uint32_t>(
       ::capnp::bounded<0>() * ::capnp::ELEMENTS);
 }
 
-inline  ::uint32_t ThirdPartyCompletion::Builder::getJoinId() {
+inline  ::uint32_t ProvisionId::Builder::getJoinId() {
   return _builder.getDataField< ::uint32_t>(
       ::capnp::bounded<0>() * ::capnp::ELEMENTS);
 }
-inline void ThirdPartyCompletion::Builder::setJoinId( ::uint32_t value) {
+inline void ProvisionId::Builder::setJoinId( ::uint32_t value) {
   _builder.setDataField< ::uint32_t>(
       ::capnp::bounded<0>() * ::capnp::ELEMENTS, value);
 }

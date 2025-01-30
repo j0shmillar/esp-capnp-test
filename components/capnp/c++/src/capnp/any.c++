@@ -92,7 +92,11 @@ Equality AnyStruct::Reader::equals(AnyStruct::Reader right) const {
     -- dataSizeR;
   }
 
-  if(dataL.first(dataSizeL) != dataR.first(dataSizeR)) {
+  if(dataSizeL != dataSizeR) {
+    return Equality::NOT_EQUAL;
+  }
+
+  if(0 != memcmp(dataL.begin(), dataR.begin(), dataSizeL)) {
     return Equality::NOT_EQUAL;
   }
 
@@ -176,7 +180,7 @@ Equality AnyList::Reader::equals(AnyList::Reader right) const {
         cmpSize -= 1;
       }
 
-      if (getRawBytes().first(cmpSize) == right.getRawBytes().first(cmpSize)) {
+      if (memcmp(getRawBytes().begin(), right.getRawBytes().begin(), cmpSize) == 0) {
         return Equality::EQUAL;
       } else {
         return Equality::NOT_EQUAL;

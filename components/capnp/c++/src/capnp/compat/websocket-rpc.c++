@@ -30,7 +30,7 @@ WebSocketMessageStream::WebSocketMessageStream(kj::WebSocket& socket)
   {};
 
 kj::Promise<kj::Maybe<MessageReaderAndFds>> WebSocketMessageStream::tryReadMessage(
-    kj::ArrayPtr<kj::OwnFd> fdSpace,
+    kj::ArrayPtr<kj::AutoCloseFd> fdSpace,
     ReaderOptions options, kj::ArrayPtr<word> scratchSpace) {
   return socket.receive(options.traversalLimitInWords * sizeof(word))
       .then([options](auto msg) -> kj::Promise<kj::Maybe<MessageReaderAndFds>> {
@@ -105,7 +105,7 @@ kj::Promise<void> WebSocketMessageStream::writeMessages(
 }
 
 kj::Maybe<int> WebSocketMessageStream::getSendBufferSize() {
-  return kj::none;
+  return nullptr;
 }
 
 kj::Promise<void> WebSocketMessageStream::end() {

@@ -48,17 +48,17 @@ public:
 
   kj::MainBuilder::Validity run() {
     capnp::StreamFdMessageReader reader(STDIN_FILENO);
-    if (kj::none != kj::runCatchingExceptions([&]() {
+    KJ_IF_MAYBE(e, kj::runCatchingExceptions([&]() {
       checkTestMessage(reader.getRoot<TestAllTypes>());
     })) {
       KJ_LOG(ERROR, "threw");
     }
-    if (kj::none != kj::runCatchingExceptions([&]() {
+    KJ_IF_MAYBE(e, kj::runCatchingExceptions([&]() {
       checkDynamicTestMessage(reader.getRoot<DynamicStruct>(Schema::from<TestAllTypes>()));
     })) {
       KJ_LOG(ERROR, "dynamic threw");
     }
-    if (kj::none != kj::runCatchingExceptions([&]() {
+    KJ_IF_MAYBE(e, kj::runCatchingExceptions([&]() {
       kj::str(reader.getRoot<TestAllTypes>());
     })) {
       KJ_LOG(ERROR, "str threw");
@@ -68,7 +68,7 @@ public:
 
   kj::MainBuilder::Validity runLists() {
     capnp::StreamFdMessageReader reader(STDIN_FILENO);
-    if (kj::none != kj::runCatchingExceptions([&]() {
+    KJ_IF_MAYBE(e, kj::runCatchingExceptions([&]() {
       kj::str(reader.getRoot<test::TestLists>());
     })) {
       KJ_LOG(ERROR, "threw");
@@ -81,7 +81,7 @@ public:
 
     kj::Array<capnp::word> canonical;
     bool equal = false;
-    if (kj::none != kj::runCatchingExceptions([&]() {
+    KJ_IF_MAYBE(e, kj::runCatchingExceptions([&]() {
       capnp::ReaderOptions options;
 
       // The default traversal limit of 8 * 1024 * 1024 causes

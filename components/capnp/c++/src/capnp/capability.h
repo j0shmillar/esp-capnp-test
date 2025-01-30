@@ -133,7 +133,7 @@ public:
   //   to complete (and possibly other things, if that RPC itself returned a promise capability),
   //   but when using `sendPipelineOnly()`, `whenResolved()` may complete immediately, or never, or
   //   at an arbitrary time. Do not rely on it.
-  // - Normal path shortening may not work with these capabilities. For example, if the caller
+  // - Normal path shortening may not work with these capabilities. For exmaple, if the caller
   //   forwards a pipelined capability back to the callee's vat, calls made by the callee to that
   //   capability may continue to proxy through the caller. Conversely, if the callee ends up
   //   returning a capability that points back to the caller's vat, calls on the pipelined
@@ -202,11 +202,6 @@ public:
 
   template <typename T, typename = kj::EnableIf<kj::canConvert<T*, Capability::Server*>()>>
   Client(kj::Own<T>&& server);
-  // Make a client capability that wraps the given server capability.  The server's methods will
-  // only be executed in the given EventLoop, regardless of what thread calls the client's methods.
-
-  template <typename T, typename = kj::EnableIf<kj::canConvert<T*, Capability::Server*>()>>
-  Client(kj::Rc<T>&& server);
   // Make a client capability that wraps the given server capability.  The server's methods will
   // only be executed in the given EventLoop, regardless of what thread calls the client's methods.
 
@@ -302,8 +297,6 @@ private:
 
   static kj::Own<ClientHook> makeLocalClient(kj::Own<Capability::Server>&& server);
   static kj::Own<ClientHook> makeRevocableLocalClient(Capability::Server& server);
-  static bool isLocalClientShared(ClientHook& hook);
-  static void revokeLocalClientIfShared(ClientHook& hook);
   static void revokeLocalClient(ClientHook& hook);
   static void revokeLocalClient(ClientHook& hook, kj::Exception&& reason);
 
@@ -347,11 +340,11 @@ public:
   // requests.  Long-running asynchronous methods should try to call this as early as is
   // convenient.
 
-  typename Results::Builder getResults(kj::Maybe<MessageSize> sizeHint = kj::none);
-  typename Results::Builder initResults(kj::Maybe<MessageSize> sizeHint = kj::none);
+  typename Results::Builder getResults(kj::Maybe<MessageSize> sizeHint = nullptr);
+  typename Results::Builder initResults(kj::Maybe<MessageSize> sizeHint = nullptr);
   void setResults(typename Results::Reader value);
   void adoptResults(Orphan<Results>&& value);
-  Orphanage getResultsOrphanage(kj::Maybe<MessageSize> sizeHint = kj::none);
+  Orphanage getResultsOrphanage(kj::Maybe<MessageSize> sizeHint = nullptr);
   // Manipulate the results payload.  The "Return" message (part of the RPC protocol) will
   // typically be allocated the first time one of these is called.  Some RPC systems may
   // allocate these messages in a limited space (such as a shared memory segment), therefore the
@@ -511,7 +504,7 @@ public:
   // is no longer needed.  `context` may be used to allocate the output struct and other call
   // logistics.
 
-  virtual kj::Maybe<int> getFd() { return kj::none; }
+  virtual kj::Maybe<int> getFd() { return nullptr; }
   // If this capability is backed by a file descriptor that is safe to directly expose to clients,
   // returns that FD. When FD passing has been enabled in the RPC layer, this FD may be sent to
   // other processes along with the capability.
@@ -527,26 +520,27 @@ public:
   //
   // `shortenPath()` can also be used as a hack to shut up the client. If shortenPath() returns
   // a promise that resolves to an exception, then the client will be notified that the capability
-  // is now broken. Assuming the client is using a correct RPC implementation, this should cause
+  // is now broken. Assuming the client is using a correct RPC implemnetation, this should cause
   // all further calls initiated by the client to this capability to immediately fail client-side,
   // sparing the server's bandwidth.
   //
-  // The default implementation always returns kj::none.
+  // The default implementation always returns nullptr.
 
   // TODO(someday):  Method which can optionally be overridden to implement Join when the object is
   //   a proxy.
 
 protected:
-  Capability::Client thisCap();
+  inline Capability::Client thisCap();
   // Get a capability pointing to this object, much like the `this` keyword.
   //
-  // This method can only be called when a Client currently exists pointing at this object. In
-  // general, you can safely assume this inside of an RPC method implementation. If the Server
-  // object is not itself refcounted and a Client is always created immediately after construction,
-  // then `thisCap()` should work in any method except for the constructor and destructor.
-  //
-  // Note that if RevocableServer is in use, `thisCap()` returns a copy of the revocable Client
-  // object; it does not attempt to create a non-revocable reference.
+  // The effect of this method is undefined if:
+  // - No capability client has been created pointing to this object. (This is always the case in
+  //   the server's constructor.)
+  // - The capability client pointing at this object has been destroyed. (This is always the case
+  //   in the server's destructor.)
+  // - The capability client pointing at this object has been revoked using RevocableServer.
+  // - Multiple capability clients have been created around the same server (possible if the server
+  //   is refcounted, which is not recommended since the client itself provides refcounting).
 
   template <typename Params, typename Results>
   CallContext<Params, Results> internalGetTypedContext(
@@ -562,10 +556,8 @@ protected:
                                           uint64_t typeId, uint16_t methodId);
 
 private:
-  kj::Maybe<ClientHook&> thisHook;
+  ClientHook* thisHook = nullptr;
   friend class LocalClient;
-  friend class Capability::Client;
-  friend class _::CapabilityServerSetBase;
 };
 
 template <typename T>
@@ -591,9 +583,6 @@ public:
   KJ_DISALLOW_COPY(RevocableServer);
 
   typename T::Client getClient();
-
-  bool isInUse();
-  // Returns whether the capability returned by getClient() still has references outstanding.
 
   void revoke();
   void revoke(kj::Exception&& reason);
@@ -737,8 +726,6 @@ class RequestHook {
   // Hook interface implemented by RPC system representing a request being built.
 
 public:
-  RequestHook(const void* brand = nullptr): brand(brand) {}
-
   virtual RemotePromise<AnyPointer> send() = 0;
   // Send the call and return a promise for the result.
 
@@ -748,18 +735,15 @@ public:
   virtual AnyPointer::Pipeline sendForPipeline() = 0;
   // Send a call for pipelining purposes only.
 
-  inline bool isBrand(const void* other) { return brand == other; }
-  // Checks if this RequestHook's brand, as passed to the constructor, matches the given pointer.
-  // This can be used by an RPC adapter to discover when tail call is going to be sent over its own
-  // connection and therefore can be optimized into a remote tail call.
+  virtual const void* getBrand() = 0;
+  // Returns a void* that identifies who made this request.  This can be used by an RPC adapter to
+  // discover when tail call is going to be sent over its own connection and therefore can be
+  // optimized into a remote tail call.
 
   template <typename T, typename U>
   inline static kj::Own<RequestHook> from(Request<T, U>&& request) {
     return kj::mv(request.hook);
   }
-
-private:
-  const void* brand;
 };
 
 class ResponseHook {
@@ -782,7 +766,7 @@ public:
 
 class ClientHook {
 public:
-  ClientHook(const void* brand = nullptr);
+  ClientHook();
 
   using CallHints = Capability::Client::CallHints;
 
@@ -837,21 +821,20 @@ public:
   virtual kj::Own<ClientHook> addRef() = 0;
   // Return a new reference to the same capability.
 
-  inline bool isBrand(const void* other) { return brand == other; }
-  // Checks if this ClientHooks's brand, as passed to the constructor, matches the given pointer.
-  // This can be used by an RPC adapter to discover when a capability it needs to marshal is one
-  // that it created in the first place, and therefore it can transfer the capability without
-  // proxying.
+  virtual const void* getBrand() = 0;
+  // Returns a void* that identifies who made this client.  This can be used by an RPC adapter to
+  // discover when a capability it needs to marshal is one that it created in the first place, and
+  // therefore it can transfer the capability without proxying.
 
   static const uint NULL_CAPABILITY_BRAND;
   static const uint BROKEN_CAPABILITY_BRAND;
   // Values are irrelevant; used for pointers.
 
-  inline bool isNull() { return isBrand(&NULL_CAPABILITY_BRAND); }
+  inline bool isNull() { return getBrand() == &NULL_CAPABILITY_BRAND; }
   // Returns true if the capability was created as a result of assigning a Client to null or by
   // reading a null pointer out of a Cap'n Proto message.
 
-  inline bool isError() { return isBrand(&BROKEN_CAPABILITY_BRAND); }
+  inline bool isError() { return getBrand() == &BROKEN_CAPABILITY_BRAND; }
   // Returns true if the capability was created by newBrokenCap().
 
   virtual kj::Maybe<int> getFd() = 0;
@@ -859,9 +842,6 @@ public:
   // non-null, then Capability::Client::getFd() waits for resolution and tries again.
 
   static kj::Own<ClientHook> from(Capability::Client client) { return kj::mv(client.hook); }
-
-private:
-  const void* brand;
 };
 
 class RevocableClientHook: public ClientHook {
@@ -1111,9 +1091,6 @@ template <typename T, typename>
 inline Capability::Client::Client(kj::Own<T>&& server)
     : hook(makeLocalClient(kj::mv(server))) {}
 template <typename T, typename>
-inline Capability::Client::Client(kj::Rc<T>&& server)
-    : hook(makeLocalClient(server.toOwn())) {}
-template <typename T, typename>
 inline Capability::Client::Client(kj::Promise<T>&& promise)
     : hook(newLocalPromiseClient(promise.then([](T&& t) { return kj::mv(t.hook); }))) {}
 inline Capability::Client::Client(Client& other): hook(other.hook->addRef()) {}
@@ -1181,7 +1158,7 @@ inline void CallContext<Params, Results>::setResults(typename Results::Reader va
 }
 template <typename Params, typename Results>
 inline void CallContext<Params, Results>::adoptResults(Orphan<Results>&& value) {
-  hook->getResults(kj::none).adopt(kj::mv(value));
+  hook->getResults(nullptr).adopt(kj::mv(value));
 }
 template <typename Params, typename Results>
 inline Orphanage CallContext<Params, Results>::getResultsOrphanage(
@@ -1215,6 +1192,10 @@ StreamingCallContext<Params> Capability::Server::internalGetTypedStreamingContex
   return StreamingCallContext<Params>(*typeless.hook);
 }
 
+Capability::Client Capability::Server::thisCap() {
+  return Client(thisHook->addRef());
+}
+
 template <typename T>
 RevocableServer<T>::RevocableServer(typename T::Server& server)
     : hook(Capability::Client::makeRevocableLocalClient(server)) {}
@@ -1222,20 +1203,13 @@ template <typename T>
 RevocableServer<T>::~RevocableServer() noexcept(false) {
   // Check if moved away.
   if (hook.get() != nullptr) {
-    // Optimization: If we hold the only reference on the ClientHook, we don't really need to
-    // revoke it.
-    Capability::Client::revokeLocalClientIfShared(*hook);
+    Capability::Client::revokeLocalClient(*hook);
   }
 }
 
 template <typename T>
 typename T::Client RevocableServer<T>::getClient() {
   return typename T::Client(hook->addRef());
-}
-
-template <typename T>
-bool RevocableServer<T>::isInUse() {
-  return Capability::Client::isLocalClientShared(*hook);
 }
 
 template <typename T>
@@ -1300,7 +1274,7 @@ kj::Promise<kj::Maybe<typename T::Server&>> CapabilityServerSet<T>::getLocalServ
   return getLocalServerInternal(client)
       .then([](void* server) -> kj::Maybe<typename T::Server&> {
     if (server == nullptr) {
-      return kj::none;
+      return nullptr;
     } else {
       return *reinterpret_cast<typename T::Server*>(server);
     }

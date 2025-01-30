@@ -253,7 +253,7 @@ static String makeDescriptionImpl(DescriptionStyle style, const char* code, int 
 // On android before marshmallow only the posix version of stderror_r was
 // available, even with __USE_GNU.
 #if __USE_GNU && !(defined(__ANDROID_API__) && __ANDROID_API__ < 23)
-    char buffer[256]{};
+    char buffer[256];
     if (style == SYSCALL) {
       if (sysErrorString == nullptr) {
         sysErrorArray = strerror_r(errorNumber, buffer, sizeof(buffer));
@@ -285,8 +285,9 @@ static String makeDescriptionImpl(DescriptionStyle style, const char* code, int 
         break;
     }
 
-    auto needsLabel = [](const ArrayPtr<const char> &argName) -> bool {
-      return argName.size() > 0 && argName[0] != '\"' && !argName.startsWith("kj::str("_kjc);
+    auto needsLabel = [](ArrayPtr<const char> &argName) -> bool {
+      return (argName.size() > 0 && argName[0] != '\"' &&
+          !(argName.size() >= 8 && memcmp(argName.begin(), "kj::str(", 8) == 0));
     };
 
     for (size_t i = 0; i < argValues.size(); i++) {
@@ -441,8 +442,8 @@ Debug::Context::Context(): logged(false) {}
 Debug::Context::~Context() noexcept(false) {}
 
 Debug::Context::Value Debug::Context::ensureInitialized() {
-  KJ_IF_SOME(v, value) {
-    return Value(v.file, v.line, heapString(v.description));
+  KJ_IF_MAYBE(v, value) {
+    return Value(v->file, v->line, heapString(v->description));
   } else {
     Value result = evaluate();
     value = Value(result.file, result.line, heapString(result.description));

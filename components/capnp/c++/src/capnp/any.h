@@ -22,6 +22,7 @@
 #pragma once
 
 #include "layout.h"
+#include "pointer-helpers.h"
 #include "orphan.h"
 #include "list.h"
 #include <kj/windows-sanity.h>  // work-around macro conflict with `VOID`
@@ -30,9 +31,6 @@
 CAPNP_BEGIN_HEADER
 
 namespace capnp {
-namespace _ {
-  class PointerBuilder;
-}
 
 class StructSchema;
 class ListSchema;
@@ -108,6 +106,9 @@ struct AnyPointer {
 
     Equality equals(AnyPointer::Reader right) const;
     bool operator==(AnyPointer::Reader right) const;
+    inline bool operator!=(AnyPointer::Reader right) const {
+      return !(*this == right);
+    }
 
     template <typename T>
     inline ReaderFor<T> getAs() const;
@@ -162,6 +163,9 @@ struct AnyPointer {
     }
     inline bool operator==(AnyPointer::Reader right) const {
       return asReader() == right;
+    }
+    inline bool operator!=(AnyPointer::Reader right) const {
+      return !(*this == right);
     }
 
     inline void clear();
@@ -348,6 +352,7 @@ public:
   // Down-cast the orphan to a specific type.
 
   inline bool operator==(decltype(nullptr)) const { return builder == nullptr; }
+  inline bool operator!=(decltype(nullptr)) const { return builder != nullptr; }
 
 private:
   _::OrphanBuilder builder;
@@ -474,6 +479,9 @@ public:
 
   Equality equals(AnyStruct::Reader right) const;
   bool operator==(AnyStruct::Reader right) const;
+  inline bool operator!=(AnyStruct::Reader right) const {
+    return !(*this == right);
+  }
 
   template <typename T>
   ReaderFor<T> as() const {
@@ -518,6 +526,9 @@ public:
   }
   inline bool operator==(AnyStruct::Reader right) const {
     return asReader() == right;
+  }
+  inline bool operator!=(AnyStruct::Reader right) const {
+    return !(*this == right);
   }
 
   inline operator Reader() const { return Reader(_builder.asReader()); }
@@ -642,6 +653,9 @@ public:
 
   Equality equals(AnyList::Reader right) const;
   bool operator==(AnyList::Reader right) const;
+  inline bool operator!=(AnyList::Reader right) const {
+    return !(*this == right);
+  }
 
   inline MessageSize totalSize() const {
     return _reader.totalSize().asPublic();
@@ -678,6 +692,9 @@ public:
   Equality equals(AnyList::Reader right) const;
   inline bool operator==(AnyList::Reader right) const{
     return asReader() == right;
+  }
+  inline bool operator!=(AnyList::Reader right) const{
+    return !(*this == right);
   }
 
   template <typename T> BuilderFor<T> as() {
@@ -734,6 +751,10 @@ inline bool operator==(const PipelineOp& a, const PipelineOp& b) {
     case PipelineOp::GET_POINTER_FIELD: return a.pointerIndex == b.pointerIndex;
   }
   KJ_CLANG_KNOWS_THIS_IS_UNREACHABLE_BUT_GCC_DOESNT
+}
+
+inline bool operator!=(const PipelineOp& a, const PipelineOp& b) {
+  return !(a == b);
 }
 
 class PipelineHook {

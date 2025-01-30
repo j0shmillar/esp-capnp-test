@@ -85,7 +85,7 @@ private:
       return false;
     }
 
-    char flat[maxInlineValueSize + 1]{};
+    char flat[maxInlineValueSize + 1];
     text.flattenTo(flat);
     flat[text.size()] = '\0';
     if (strchr(flat, '\n') != nullptr) {
@@ -158,8 +158,8 @@ static kj::StringTree print(const DynamicValue::Reader& value,
     }
     case DynamicValue::ENUM: {
       auto enumValue = value.as<DynamicEnum>();
-      KJ_IF_SOME(enumerant, enumValue.getEnumerant()) {
-        return kj::strTree(enumerant.getProto().getName());
+      KJ_IF_MAYBE(enumerant, enumValue.getEnumerant()) {
+        return kj::strTree(enumerant->getProto().getName());
       } else {
         // Unknown enum value; output raw number.
         return kj::strTree('(', enumValue.getRaw(), ')');
@@ -177,24 +177,24 @@ static kj::StringTree print(const DynamicValue::Reader& value,
       auto which = structValue.which();
 
       kj::StringTree unionValue;
-      KJ_IF_SOME(field, which) {
+      KJ_IF_MAYBE(field, which) {
         // Even if the union field has its default value, if it is not the default field of the
         // union then we have to print it anyway.
-        auto fieldProto = field.getProto();
-        if (fieldProto.getDiscriminantValue() != 0 || structValue.has(field)) {
+        auto fieldProto = field->getProto();
+        if (fieldProto.getDiscriminantValue() != 0 || structValue.has(*field)) {
           unionValue = kj::strTree(
               fieldProto.getName(), " = ",
-              print(structValue.get(field), whichFieldType(field), indent.next(), PREFIXED));
+              print(structValue.get(*field), whichFieldType(*field), indent.next(), PREFIXED));
         } else {
-          which = kj::none;
+          which = nullptr;
         }
       }
 
       for (auto field: nonUnionFields) {
-        KJ_IF_SOME(unionField, which) {
-          if (unionField.getIndex() < field.getIndex()) {
+        KJ_IF_MAYBE(unionField, which) {
+          if (unionField->getIndex() < field.getIndex()) {
             printedFields.add(kj::mv(unionValue));
-            which = kj::none;
+            which = nullptr;
           }
         }
         if (structValue.has(field)) {
@@ -203,7 +203,7 @@ static kj::StringTree print(const DynamicValue::Reader& value,
               print(structValue.get(field), whichFieldType(field), indent.next(), PREFIXED)));
         }
       }
-      if (which != kj::none) {
+      if (which != nullptr) {
         // Union value is last.
         printedFields.add(kj::mv(unionValue));
       }

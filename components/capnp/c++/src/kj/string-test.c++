@@ -185,22 +185,22 @@ TEST(String, tryParseAs) {
   KJ_EXPECT(isNaN(StringPtr("nan").tryParseAs<double>().orDefault(0.0)) == true);
   KJ_EXPECT(isNaN(StringPtr("NAN").tryParseAs<double>().orDefault(0.0)) == true);
   KJ_EXPECT(isNaN(StringPtr("NaN").tryParseAs<double>().orDefault(0.0)) == true);
-  KJ_EXPECT(StringPtr("").tryParseAs<double>() == kj::none);
-  KJ_EXPECT(StringPtr("a").tryParseAs<double>() == kj::none);
-  KJ_EXPECT(StringPtr("1a").tryParseAs<double>() == kj::none);
-  KJ_EXPECT(StringPtr("+-1").tryParseAs<double>() == kj::none);
+  KJ_EXPECT(StringPtr("").tryParseAs<double>() == nullptr);
+  KJ_EXPECT(StringPtr("a").tryParseAs<double>() == nullptr);
+  KJ_EXPECT(StringPtr("1a").tryParseAs<double>() == nullptr);
+  KJ_EXPECT(StringPtr("+-1").tryParseAs<double>() == nullptr);
 
   KJ_EXPECT(StringPtr("1").tryParseAs<float>() == 1.0);
 
   KJ_EXPECT(StringPtr("1").tryParseAs<int64_t>() == 1);
   KJ_EXPECT(StringPtr("9223372036854775807").tryParseAs<int64_t>() == 9223372036854775807LL);
   KJ_EXPECT(StringPtr("-9223372036854775808").tryParseAs<int64_t>() == -9223372036854775808ULL);
-  KJ_EXPECT(StringPtr("9223372036854775808").tryParseAs<int64_t>() == kj::none);
-  KJ_EXPECT(StringPtr("-9223372036854775809").tryParseAs<int64_t>() == kj::none);
-  KJ_EXPECT(StringPtr("").tryParseAs<int64_t>() == kj::none);
-  KJ_EXPECT(StringPtr("a").tryParseAs<int64_t>() == kj::none);
-  KJ_EXPECT(StringPtr("1a").tryParseAs<int64_t>() == kj::none);
-  KJ_EXPECT(StringPtr("+-1").tryParseAs<int64_t>() == kj::none);
+  KJ_EXPECT(StringPtr("9223372036854775808").tryParseAs<int64_t>() == nullptr);
+  KJ_EXPECT(StringPtr("-9223372036854775809").tryParseAs<int64_t>() == nullptr);
+  KJ_EXPECT(StringPtr("").tryParseAs<int64_t>() == nullptr);
+  KJ_EXPECT(StringPtr("a").tryParseAs<int64_t>() == nullptr);
+  KJ_EXPECT(StringPtr("1a").tryParseAs<int64_t>() == nullptr);
+  KJ_EXPECT(StringPtr("+-1").tryParseAs<int64_t>() == nullptr);
   KJ_EXPECT(StringPtr("010").tryParseAs<int64_t>() == 10);
   KJ_EXPECT(StringPtr("0010").tryParseAs<int64_t>() == 10);
   KJ_EXPECT(StringPtr("0x10").tryParseAs<int64_t>() == 16);
@@ -212,24 +212,24 @@ TEST(String, tryParseAs) {
   KJ_EXPECT(StringPtr("1").tryParseAs<uint64_t>() == 1);
   KJ_EXPECT(StringPtr("0").tryParseAs<uint64_t>() == 0);
   KJ_EXPECT(StringPtr("18446744073709551615").tryParseAs<uint64_t>() == 18446744073709551615ULL);
-  KJ_EXPECT(StringPtr("-1").tryParseAs<uint64_t>() == kj::none);
-  KJ_EXPECT(StringPtr("18446744073709551616").tryParseAs<uint64_t>() == kj::none);
-  KJ_EXPECT(StringPtr("").tryParseAs<uint64_t>() == kj::none);
-  KJ_EXPECT(StringPtr("a").tryParseAs<uint64_t>() == kj::none);
-  KJ_EXPECT(StringPtr("1a").tryParseAs<uint64_t>() == kj::none);
-  KJ_EXPECT(StringPtr("+-1").tryParseAs<uint64_t>() == kj::none);
+  KJ_EXPECT(StringPtr("-1").tryParseAs<uint64_t>() == nullptr);
+  KJ_EXPECT(StringPtr("18446744073709551616").tryParseAs<uint64_t>() == nullptr);
+  KJ_EXPECT(StringPtr("").tryParseAs<uint64_t>() == nullptr);
+  KJ_EXPECT(StringPtr("a").tryParseAs<uint64_t>() == nullptr);
+  KJ_EXPECT(StringPtr("1a").tryParseAs<uint64_t>() == nullptr);
+  KJ_EXPECT(StringPtr("+-1").tryParseAs<uint64_t>() == nullptr);
 
   KJ_EXPECT(StringPtr("1").tryParseAs<int32_t>() == 1);
   KJ_EXPECT(StringPtr("2147483647").tryParseAs<int32_t>() == 2147483647);
   KJ_EXPECT(StringPtr("-2147483648").tryParseAs<int32_t>() == -2147483648);
-  KJ_EXPECT(StringPtr("2147483648").tryParseAs<int32_t>() == kj::none);
-  KJ_EXPECT(StringPtr("-2147483649").tryParseAs<int32_t>() == kj::none);
+  KJ_EXPECT(StringPtr("2147483648").tryParseAs<int32_t>() == nullptr);
+  KJ_EXPECT(StringPtr("-2147483649").tryParseAs<int32_t>() == nullptr);
 
   KJ_EXPECT(StringPtr("1").tryParseAs<uint32_t>() == 1);
   KJ_EXPECT(StringPtr("0").tryParseAs<uint32_t>() == 0U);
   KJ_EXPECT(StringPtr("4294967295").tryParseAs<uint32_t>() == 4294967295U);
-  KJ_EXPECT(StringPtr("-1").tryParseAs<uint32_t>() == kj::none);
-  KJ_EXPECT(StringPtr("4294967296").tryParseAs<uint32_t>() == kj::none);
+  KJ_EXPECT(StringPtr("-1").tryParseAs<uint32_t>() == nullptr);
+  KJ_EXPECT(StringPtr("4294967296").tryParseAs<uint32_t>() == nullptr);
 
   KJ_EXPECT(StringPtr("1").tryParseAs<int16_t>() == 1);
   KJ_EXPECT(StringPtr("1").tryParseAs<uint16_t>() == 1);
@@ -290,14 +290,14 @@ KJ_TEST("kj::delimited() and kj::strPreallocated()") {
   KJ_EXPECT(str(delimited(array, "::")) == "1::23::456::78");
 
   {
-    char buffer[256]{};
+    char buffer[256];
     KJ_EXPECT(strPreallocated(buffer, delimited(array, "::"), 'x')
         == "1::23::456::78x");
     KJ_EXPECT(strPreallocated(buffer, "foo", 123, true) == "foo123true");
   }
 
   {
-    char buffer[5]{};
+    char buffer[5];
     KJ_EXPECT(strPreallocated(buffer, delimited(array, "::"), 'x') == "1::2");
     KJ_EXPECT(strPreallocated(buffer, "foo", 123, true) == "foo1");
   }
@@ -309,12 +309,12 @@ KJ_TEST("parsing 'nan' returns canonical NaN value") {
   {
     double parsedNan = StringPtr("NaN").parseAs<double>();
     double canonicalNan = kj::nan();
-    KJ_EXPECT(kj::arrayPtr(parsedNan).asBytes() == kj::arrayPtr(canonicalNan).asBytes());
+    KJ_EXPECT(memcmp(&parsedNan, &canonicalNan, sizeof(parsedNan)) == 0);
   }
   {
     float parsedNan = StringPtr("NaN").parseAs<float>();
     float canonicalNan = kj::nan();
-    KJ_EXPECT(kj::arrayPtr(parsedNan).asBytes() == kj::arrayPtr(canonicalNan).asBytes());
+    KJ_EXPECT(memcmp(&parsedNan, &canonicalNan, sizeof(parsedNan)) == 0);
   }
 }
 
@@ -332,7 +332,7 @@ KJ_TEST("ArrayPtr == StringPtr") {
   ArrayPtr<const char> a = s;
 
   KJ_EXPECT(a == s);
-#if __cplusplus >= 202000L
+#if KJ_CPP_STD >= 202000L
   KJ_EXPECT(s == a);
 #endif
 }
@@ -432,93 +432,6 @@ KJ_TEST("ConstString attachment lifetimes") {
   KJ_EXPECT(destroyed2 == 2, destroyed2);
   KJ_EXPECT(destroyed3 == 3, destroyed3);
 }
-
-KJ_TEST("StringPtr find") {
-  // Empty string doesn't find anything
-  StringPtr empty("");
-  KJ_EXPECT(empty.find("") == 0);
-  KJ_EXPECT(empty.find("foo") == kj::none);
-
-  StringPtr foobar("foobar"_kj);
-  KJ_EXPECT(foobar.find("") == 0);
-  KJ_EXPECT(foobar.find("baz") == kj::none);
-  KJ_EXPECT(foobar.find("foobar") == 0);
-  KJ_EXPECT(foobar.find("f") == 0);
-  KJ_EXPECT(foobar.find("oobar") == 1);
-  KJ_EXPECT(foobar.find("ar") == 4);
-  KJ_EXPECT(foobar.find("o") == 1);
-  KJ_EXPECT(foobar.find("oo") == 1);
-  KJ_EXPECT(foobar.find("r") == 5);
-  KJ_EXPECT(foobar.find("foobar!") == kj::none);
-
-  // Self pointers shouldn't cause issues, but it's worth testing.
-  KJ_EXPECT(foobar.find(foobar) == 0);
-  KJ_EXPECT(foobar.find(foobar.slice(1)) == 1);
-  KJ_EXPECT(foobar.slice(1).find(foobar.slice(1)) == 0);
-  KJ_EXPECT(foobar.slice(2).find(foobar.slice(1)) == kj::none);
-}
-
-KJ_TEST("StringPtr contains") {
-  // Empty string doesn't find anything
-  StringPtr empty("");
-  KJ_EXPECT(empty.contains("") == true);
-  KJ_EXPECT(empty.contains("foo") == false);
-
-  StringPtr foobar("foobar"_kj);
-  KJ_EXPECT(foobar.contains("") == true);
-  KJ_EXPECT(foobar.contains("baz") == false);
-  KJ_EXPECT(foobar.contains("foobar") == true);
-  KJ_EXPECT(foobar.contains("f") == true);
-  KJ_EXPECT(foobar.contains("oobar") == true);
-  KJ_EXPECT(foobar.contains("ar") == true);
-  KJ_EXPECT(foobar.contains("o") == true);
-  KJ_EXPECT(foobar.contains("oo") == true);
-  KJ_EXPECT(foobar.contains("r") == true);
-  KJ_EXPECT(foobar.contains("foobar!") == false);
-
-  // Self pointers shouldn't cause issues, but it's worth testing.
-  KJ_EXPECT(foobar.contains(foobar) == true);
-  KJ_EXPECT(foobar.contains(foobar.slice(1)) == true);
-  KJ_EXPECT(foobar.slice(1).contains(foobar.slice(1)) == true);
-  KJ_EXPECT(foobar.slice(2).contains(foobar.slice(1)) == false);
-}
-
-struct Std {
-  static std::string from(const String* str) {
-    return std::string(str->cStr());
-  }
-
-  static std::string from(const StringPtr* str) {
-    return std::string(str->cStr());
-  }
-};
-
-KJ_TEST("as<Std>") {
-  String str = kj::str("foo"_kj);
-  std::string stdStr = str.as<Std>();
-  KJ_EXPECT(stdStr == "foo");
-
-  StringPtr ptr = "bar"_kj;
-  std::string stdPtr = ptr.as<Std>();
-  KJ_EXPECT(stdPtr == "bar");
-}
-
-// Supports constexpr
-constexpr const StringPtr HELLO_WORLD = "hello world"_kj;
-static_assert(HELLO_WORLD.size() == 11);
-static_assert(HELLO_WORLD.startsWith("hello"_kj));
-static_assert(HELLO_WORLD.endsWith("world"_kj));
-static_assert(HELLO_WORLD[0] == *"h");
-static_assert(HELLO_WORLD.asArray().size() == 11);
-static_assert(*HELLO_WORLD.asArray().begin() == 'h');
-static_assert(HELLO_WORLD.asArray().front() == 'h');
-static_assert(HELLO_WORLD.first(2).size() == 2);
-static_assert(HELLO_WORLD.slice(5).size() == 6);
-static_assert(StringPtr().size() == 0);
-static_assert(StringPtr(nullptr).size() == 0);
-static_assert(StringPtr(HELLO_WORLD.begin(), HELLO_WORLD.size()).size() == 11);
-static_assert(HELLO_WORLD > StringPtr());
-static_assert(StringPtr("const"_kj).size() == 5);
 
 }  // namespace
 }  // namespace _ (private)

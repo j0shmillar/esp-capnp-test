@@ -20,7 +20,6 @@
 // THE SOFTWARE.
 
 #include "common.h"
-#include "function.h"
 #include "test.h"
 #include <cstdlib>
 #include <stdexcept>
@@ -34,14 +33,68 @@ namespace kj {
 namespace _ {
 namespace {
 
-KJ_TEST("expect exit from exit") {
-  KJ_EXPECT_EXIT(42, _exit(42));
-  KJ_EXPECT_EXIT(kj::none, _exit(42));
+KJ_TEST("GlobFilter") {
+  {
+    GlobFilter filter("foo");
+
+    KJ_EXPECT(filter.matches("foo"));
+    KJ_EXPECT(!filter.matches("bar"));
+    KJ_EXPECT(!filter.matches("foob"));
+    KJ_EXPECT(!filter.matches("foobbb"));
+    KJ_EXPECT(!filter.matches("fobbbb"));
+    KJ_EXPECT(!filter.matches("bfoo"));
+    KJ_EXPECT(!filter.matches("bbbbbfoo"));
+    KJ_EXPECT(filter.matches("bbbbb/foo"));
+    KJ_EXPECT(filter.matches("bar/baz/foo"));
+  }
+
+  {
+    GlobFilter filter("foo*");
+
+    KJ_EXPECT(filter.matches("foo"));
+    KJ_EXPECT(!filter.matches("bar"));
+    KJ_EXPECT(filter.matches("foob"));
+    KJ_EXPECT(filter.matches("foobbb"));
+    KJ_EXPECT(!filter.matches("fobbbb"));
+    KJ_EXPECT(!filter.matches("bfoo"));
+    KJ_EXPECT(!filter.matches("bbbbbfoo"));
+    KJ_EXPECT(filter.matches("bbbbb/foo"));
+    KJ_EXPECT(filter.matches("bar/baz/foo"));
+  }
+
+  {
+    GlobFilter filter("foo*bar");
+
+    KJ_EXPECT(filter.matches("foobar"));
+    KJ_EXPECT(filter.matches("fooxbar"));
+    KJ_EXPECT(filter.matches("fooxxxbar"));
+    KJ_EXPECT(!filter.matches("foo/bar"));
+    KJ_EXPECT(filter.matches("blah/fooxxxbar"));
+    KJ_EXPECT(!filter.matches("blah/xxfooxxxbar"));
+  }
+
+  {
+    GlobFilter filter("foo?bar");
+
+    KJ_EXPECT(!filter.matches("foobar"));
+    KJ_EXPECT(filter.matches("fooxbar"));
+    KJ_EXPECT(!filter.matches("fooxxxbar"));
+    KJ_EXPECT(!filter.matches("foo/bar"));
+    KJ_EXPECT(filter.matches("blah/fooxbar"));
+    KJ_EXPECT(!filter.matches("blah/xxfooxbar"));
+  }
 }
 
+KJ_TEST("expect exit from exit") {
+  KJ_EXPECT_EXIT(42, _exit(42));
+  KJ_EXPECT_EXIT(nullptr, _exit(42));
+}
+
+#if !KJ_NO_EXCEPTIONS
 KJ_TEST("expect exit from thrown exception") {
   KJ_EXPECT_EXIT(1, throw std::logic_error("test error"));
 }
+#endif
 
 KJ_TEST("expect signal from abort") {
   KJ_EXPECT_SIGNAL(SIGABRT, abort());
@@ -49,7 +102,7 @@ KJ_TEST("expect signal from abort") {
 
 KJ_TEST("expect signal from sigint") {
   KJ_EXPECT_SIGNAL(SIGINT, raise(SIGINT));
-  KJ_EXPECT_SIGNAL(kj::none, raise(SIGINT));
+  KJ_EXPECT_SIGNAL(nullptr, raise(SIGINT));
 }
 
 }  // namespace

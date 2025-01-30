@@ -23,22 +23,19 @@
 
 #include "async-unix.h"
 #include "debug.h"
+#include "threadlocal.h"
 #include <setjmp.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <limits>
 #include <pthread.h>
+#include <map>
 #include <sys/wait.h>
 #include <unistd.h>
-
-#if !KJ_USE_KQUEUE
-#include <map>
-#endif
 
 #if KJ_USE_EPOLL
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
-#include <sys/timerfd.h>
 #elif KJ_USE_KQUEUE
 #include <sys/event.h>
 #include <fcntl.h>
@@ -73,7 +70,7 @@ bool threadClaimedChildExits = false;
 
 namespace {
 
-thread_local UnixEventPort* threadEventPort = nullptr;
+KJ_THREADLOCAL_PTR(UnixEventPort) threadEventPort = nullptr;
 // This is set to the current UnixEventPort just before epoll_pwait(), then back to null after it
 // returns.
 
@@ -84,7 +81,7 @@ void UnixEventPort::signalHandler(int, siginfo_t* siginfo, void*) noexcept {
   // usual signal-safety concerns. We can treat this more like a callback. So, we can just call
   // gotSignal() directly, no biggy.
 
-  // Note that, if somehow the signal handler is invoked when *not* running `epoll_pwait()`, then
+  // Note that, if somehow the signal hanlder is invoked when *not* running `epoll_pwait()`, then
   // `threadEventPort` will be null. We silently ignore the signal in this case. This should never
   // happen in normal execution, so you might argue we should assert-fail instead. However:
   // - We obviously can't throw from here, so we'd have to crash instead.
@@ -103,7 +100,7 @@ void UnixEventPort::signalHandler(int, siginfo_t* siginfo, void*) noexcept {
 #elif KJ_USE_KQUEUE
 
 #if !KJ_HAS_SIGTIMEDWAIT
-static thread_local siginfo_t* threadCapture = nullptr;
+KJ_THREADLOCAL_PTR(siginfo_t) threadCapture = nullptr;
 #endif
 
 void UnixEventPort::signalHandler(int, siginfo_t* siginfo, void*) noexcept {
@@ -155,7 +152,7 @@ struct SignalCapture {
 #endif
 };
 
-thread_local SignalCapture* threadCapture = nullptr;
+KJ_THREADLOCAL_PTR(SignalCapture) threadCapture = nullptr;
 
 }  // namespace
 
@@ -278,7 +275,7 @@ void UnixEventPort::ChildSet::checkExits() {
 
     auto iter = waiters.find(pid);
     if (iter != waiters.end()) {
-      iter->second->pidRef = kj::none;
+      iter->second->pidRef = nullptr;
       iter->second->fulfiller.fulfill(kj::cp(status));
     }
   }
@@ -289,8 +286,8 @@ Promise<int> UnixEventPort::onChildExit(Maybe<pid_t>& pid) {
       "must call UnixEventPort::captureChildExit() to use onChildExit().");
 
   ChildSet* cs;
-  KJ_IF_SOME(c, childSet) {
-    cs = c;
+  KJ_IF_MAYBE(c, childSet) {
+    cs = *c;
   } else {
     // In theory we should do an atomic compare-and-swap on threadClaimedChildExits, but this is
     // for debug purposes only so it's not a big deal.
@@ -387,9 +384,9 @@ void UnixEventPort::setReservedSignal(int signum) {
 
 void UnixEventPort::gotSignal(const siginfo_t& siginfo) {
   // If onChildExit() has been called and this is SIGCHLD, check for child exits.
-  KJ_IF_SOME(cs, childSet) {
+  KJ_IF_MAYBE(cs, childSet) {
     if (siginfo.si_signo == SIGCHLD) {
-      cs->checkExits();
+      cs->get()->checkExits();
       return;
     }
   }
@@ -417,8 +414,12 @@ UnixEventPort::UnixEventPort()
       timerImpl(clock.now()) {
   ignoreSigpipe();
 
-  epollFd = KJ_SYSCALL_FD(epoll_create1(EPOLL_CLOEXEC));
-  eventFd = KJ_SYSCALL_FD(eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK));
+  int fd;
+  KJ_SYSCALL(fd = epoll_create1(EPOLL_CLOEXEC));
+  epollFd = AutoCloseFd(fd);
+
+  KJ_SYSCALL(fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK));
+  eventFd = AutoCloseFd(fd);
 
   struct epoll_event event;
   memset(&event, 0, sizeof(event));
@@ -434,7 +435,7 @@ UnixEventPort::UnixEventPort()
 }
 
 UnixEventPort::~UnixEventPort() noexcept(false) {
-  if (childSet != kj::none) {
+  if (childSet != nullptr) {
     // We had claimed the exclusive right to call onChildExit(). Release that right.
     threadClaimedChildExits = false;
   }
@@ -474,30 +475,30 @@ void UnixEventPort::FdObserver::fire(short events) {
       atEnd = false;
     }
 
-    KJ_IF_SOME(f, readFulfiller) {
-      f->fulfill();
-      readFulfiller = kj::none;
+    KJ_IF_MAYBE(f, readFulfiller) {
+      f->get()->fulfill();
+      readFulfiller = nullptr;
     }
   }
 
   if (events & (EPOLLOUT | EPOLLHUP | EPOLLERR)) {
-    KJ_IF_SOME(f, writeFulfiller) {
-      f->fulfill();
-      writeFulfiller = kj::none;
+    KJ_IF_MAYBE(f, writeFulfiller) {
+      f->get()->fulfill();
+      writeFulfiller = nullptr;
     }
   }
 
   if (events & (EPOLLHUP | EPOLLERR)) {
-    KJ_IF_SOME(f, hupFulfiller) {
-      f->fulfill();
-      hupFulfiller = kj::none;
+    KJ_IF_MAYBE(f, hupFulfiller) {
+      f->get()->fulfill();
+      hupFulfiller = nullptr;
     }
   }
 
   if (events & EPOLLPRI) {
-    KJ_IF_SOME(f, urgentFulfiller) {
-      f->fulfill();
-      urgentFulfiller = kj::none;
+    KJ_IF_MAYBE(f, urgentFulfiller) {
+      f->get()->fulfill();
+      urgentFulfiller = nullptr;
     }
   }
 }
@@ -541,15 +542,13 @@ void UnixEventPort::wake() const {
 }
 
 bool UnixEventPort::wait() {
-  sleeping = false;
-
 #ifdef KJ_DEBUG
   // In debug mode, verify the current signal mask matches the original.
   {
     sigset_t currentMask;
     memset(&currentMask, 0, sizeof(currentMask));
     KJ_SYSCALL(sigprocmask(0, nullptr, &currentMask));
-    if (arrayPtr(currentMask).asBytes() != arrayPtr(originalMask).asBytes()) {
+    if (memcmp(&currentMask, &originalMask, sizeof(currentMask)) != 0) {
       kj::Vector<kj::String> changes;
       for (int i = 0; i <= SIGRTMAX; i++) {
         if (sigismember(&currentMask, i) && !sigismember(&originalMask, i)) {
@@ -576,7 +575,7 @@ bool UnixEventPort::wait() {
 
   struct epoll_event events[16];
   int n;
-  if (signalHead != nullptr || childSet != kj::none) {
+  if (signalHead != nullptr || childSet != nullptr) {
     // We are interested in some signals. Use epoll_pwait().
     //
     // Note: Once upon a time, we used signalfd for this. However, this turned out to be more
@@ -606,7 +605,7 @@ bool UnixEventPort::wait() {
         KJ_SYSCALL(sigdelset(&waitMask, ptr->signum));
         ptr = ptr->next;
       }
-      if (childSet != kj::none) {
+      if (childSet != nullptr) {
         KJ_SYSCALL(sigdelset(&waitMask, SIGCHLD));
       }
     }
@@ -622,7 +621,7 @@ bool UnixEventPort::wait() {
   if (n < 0) {
     int error = errno;
     if (error == EINTR) {
-      // We received a signal. The signal handler may have queued an event to the event loop. Even
+      // We received a singal. The signal handler may have queued an event to the event loop. Even
       // if it didn't, we can't simply restart the epoll call because we need to recompute the
       // timeout. Instead, we pretend epoll_wait() returned zero events. This will cause the event
       // loop to spin once, decide it has nothing to do, recompute timeouts, then return to waiting.
@@ -648,19 +647,6 @@ bool UnixEventPort::processEpollEvents(struct epoll_event events[], int n) {
 
       // We were woken. Need to return true.
       woken = true;
-    } else if (events[i].data.u64 == 1) {
-      // timerfd fired. We need to clear it by reading it.
-      int tfd = KJ_ASSERT_NONNULL(timerFd).get();
-      char buffer[16]{};
-      ssize_t n;
-      KJ_NONBLOCKING_SYSCALL(n = read(tfd, buffer, sizeof(buffer)));
-      KJ_ASSERT(n == 8 || n < 0);
-
-      timerfdIsArmed = false;
-
-      // The purpose of this event is just to wake up the event loop when needed. We'll check the
-      // timer queue separately, so we don't need to do anything special in response to this event
-      // here.
     } else {
       FdObserver* observer = reinterpret_cast<FdObserver*>(events[i].data.ptr);
       observer->fire(events[i].events);
@@ -677,9 +663,7 @@ bool UnixEventPort::poll() {
   // pending signals. Therefore, we need a completely different approach to poll for signals. We
   // might as well use regular epoll_wait() in this case, too, to save the kernel some effort.
 
-  sleeping = false;
-
-  if (signalHead != nullptr || childSet != kj::none) {
+  if (signalHead != nullptr || childSet != nullptr) {
     // Use sigtimedwait() to poll for signals.
 
     // Construct a sigset of all signals we are interested in.
@@ -694,7 +678,7 @@ bool UnixEventPort::poll() {
         ++count;
         ptr = ptr->next;
       }
-      if (childSet != kj::none) {
+      if (childSet != nullptr) {
         KJ_SYSCALL(sigaddset(&sigset, SIGCHLD));
         ++count;
       }
@@ -728,85 +712,6 @@ bool UnixEventPort::poll() {
   return processEpollEvents(events, n);
 }
 
-int UnixEventPort::getPollableFd() {
-  return epollFd.get();
-}
-
-void UnixEventPort::preparePollableFdForSleep() {
-  KJ_ASSERT(signalHead == nullptr,
-      "preparePollableFdForSleep() cannot be used when waiting for signals");
-
-  if (runnable) {
-    // There is still immediate work in the queue, so force the epoll to be ready immediately. (See
-    // comments in setRunnable() regarding using wake() for this.)
-    wake();
-  } else {
-    updateNextTimerEvent(timerImpl.nextEvent());
-
-    // Flag that we're sleeping, so setRunnable() knows to use wake() if needed.
-    sleeping = true;
-
-    // Tell the timer we're sleeping, so that it notifies us if anyone tries to create a new time
-    // event.
-    timerImpl.setSleeping(*this);
-  }
-}
-
-void UnixEventPort::setRunnable(bool runnable) {
-  this->runnable = runnable;
-  if (runnable && sleeping) {
-    // A meta event loop is waiting for the epoll to become readable, and an event was queued
-    // directly to the event loop in the meantime (e.g. due to a promise fulfiller being
-    // fulfilled). So, we need to cause the epoll to signal readability, to wake the event loop. We
-    // can use the cross-thread wake mechanism for this. It'll cause the event loop to spuriously
-    // check for cross-thread events, incurring a mutex lock, but that's not a big deal, and that's
-    // much better than creating a whole second event FD for this purpose.
-    wake();
-    sleeping = false;
-  }
-}
-
-void UnixEventPort::updateNextTimerEvent(kj::Maybe<TimePoint> time) {
-  if (time == kj::none && !timerfdIsArmed) {
-    // No change needed.
-    return;
-  }
-
-  // Create the timerfd if needed.
-  int tfd;
-  KJ_IF_SOME(f, timerFd) {
-    tfd = f;
-  } else {
-    tfd = timerFd.emplace(
-        KJ_SYSCALL_FD(timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK)));
-
-    struct epoll_event event;
-    memset(&event, 0, sizeof(event));
-    event.events = EPOLLIN;
-    event.data.u64 = 1;
-    KJ_SYSCALL(epoll_ctl(epollFd, EPOLL_CTL_ADD, tfd, &event));
-  }
-
-  // Update timerfd's expiration time.
-  struct itimerspec ts;
-  memset(&ts, 0, sizeof(ts));
-  KJ_IF_SOME(t, time) {
-    auto t2 = t - origin<TimePoint>();
-    ts.it_value.tv_sec  = t2 / SECONDS;
-    ts.it_value.tv_nsec = (t2 % SECONDS) / NANOSECONDS;
-    timerfdIsArmed = true;
-  } else {
-    // setting the time to zero will disarm it
-    timerfdIsArmed = false;
-  }
-
-  KJ_SYSCALL(timerfd_settime(tfd, TFD_TIMER_ABSTIME, &ts, nullptr));
-}
-
-kj::TimePoint UnixEventPort::getTimeWhileSleeping() {
-  return clock.now();
-}
-
 #elif KJ_USE_KQUEUE
 // =======================================================================================
 // kqueue FdObserver implementation
@@ -816,7 +721,9 @@ UnixEventPort::UnixEventPort()
       timerImpl(clock.now()) {
   ignoreSigpipe();
 
-  kqueueFd = KJ_SYSCALL_FD(kqueue());
+  int fd;
+  KJ_SYSCALL(fd = kqueue());
+  kqueueFd = AutoCloseFd(fd);
 
   // NetBSD has kqueue1() which can set CLOEXEC atomically, but FreeBSD, MacOS, and others don't
   // have this... oh well.
@@ -868,7 +775,7 @@ UnixEventPort::FdObserver::~FdObserver() noexcept(false) {
   if (flags & OBSERVE_READ) {
     EV_SET(&events[nevents++], fd, EVFILT_READ, EV_DELETE, 0, 0, nullptr);
   }
-  if ((flags & OBSERVE_WRITE) || hupFulfiller != kj::none) {
+  if ((flags & OBSERVE_WRITE) || hupFulfiller != nullptr) {
     EV_SET(&events[nevents++], fd, EVFILT_WRITE, EV_DELETE, 0, 0, nullptr);
   }
 
@@ -896,18 +803,18 @@ void UnixEventPort::FdObserver::fire(struct kevent event) {
         atEnd = false;
       }
 
-      KJ_IF_SOME(f, readFulfiller) {
-        f->fulfill();
-        readFulfiller = kj::none;
+      KJ_IF_MAYBE(f, readFulfiller) {
+        f->get()->fulfill();
+        readFulfiller = nullptr;
       }
       break;
 
     case EVFILT_WRITE:
       if (event.flags & EV_EOF) {
         // EOF on write indicates disconnect.
-        KJ_IF_SOME(f, hupFulfiller) {
-          f->fulfill();
-          hupFulfiller = kj::none;
+        KJ_IF_MAYBE(f, hupFulfiller) {
+          f->get()->fulfill();
+          hupFulfiller = nullptr;
           if (!(flags & OBSERVE_WRITE)) {
             // We were only observing writes to get the disconnect event. Stop observing now.
             struct kevent rmEvent;
@@ -925,17 +832,17 @@ void UnixEventPort::FdObserver::fire(struct kevent event) {
         }
       }
 
-      KJ_IF_SOME(f, writeFulfiller) {
-        f->fulfill();
-        writeFulfiller = kj::none;
+      KJ_IF_MAYBE(f, writeFulfiller) {
+        f->get()->fulfill();
+        writeFulfiller = nullptr;
       }
       break;
 
 #ifdef EVFILT_EXCEPT
     case EVFILT_EXCEPT:
-      KJ_IF_SOME(f, urgentFulfiller) {
-        f->fulfill();
-        urgentFulfiller = kj::none;
+      KJ_IF_MAYBE(f, urgentFulfiller) {
+        f->get()->fulfill();
+        urgentFulfiller = nullptr;
       }
       break;
 #endif
@@ -968,7 +875,7 @@ Promise<void> UnixEventPort::FdObserver::whenUrgentDataAvailable() {
 }
 
 Promise<void> UnixEventPort::FdObserver::whenWriteDisconnected() {
-  if (!(flags & OBSERVE_WRITE) && hupFulfiller == kj::none) {
+  if (!(flags & OBSERVE_WRITE) && hupFulfiller == nullptr) {
     // We aren't observing writes, but we need to if we want to detect disconnects.
     struct kevent event;
     EV_SET(&event, fd, EVFILT_WRITE, EV_ADD | EV_CLEAR, 0, 0, this);
@@ -1106,12 +1013,12 @@ public:
   }
 
   ~ChildExitPromiseAdapter() noexcept(false) {
-    KJ_IF_SOME(p, pid) {
+    KJ_IF_MAYBE(p, pid) {
       // The process has not been reaped. The promise must have been canceled. So, we're still
       // registered with the kqueue. We'd better unregister because the kevent points back to this
       // object.
       struct kevent event;
-      EV_SET(&event, p, EVFILT_PROC, EV_DELETE, 0, 0, nullptr);
+      EV_SET(&event, *p, EVFILT_PROC, EV_DELETE, 0, 0, nullptr);
       KJ_SYSCALL(kevent(eventPort.kqueueFd, &event, 1, nullptr, 0, nullptr));
 
       // We leak the zombie process here. The caller is responsible for doing its own waitpid().
@@ -1123,17 +1030,17 @@ public:
     // clear the zombie. We can't set SIGCHLD to SIG_IGN to ignore this because it creates a race
     // condition.
 
-    KJ_IF_SOME(p, pid) {
+    KJ_IF_MAYBE(p, pid) {
       int status;
       pid_t result;
-      KJ_SYSCALL(result = waitpid(p, &status, WNOHANG));
+      KJ_SYSCALL(result = waitpid(*p, &status, WNOHANG));
       if (result != 0) {
-        KJ_ASSERT(result == p);
+        KJ_ASSERT(result == *p);
 
-        // NOTE: The proc is automatically unregistered from the kqueue on exit, so we should NOT
+        // NOTE: The proc is automatically unregsitered from the kqueue on exit, so we should NOT
         //   attempt to unregister it here.
 
-        pid = kj::none;
+        pid = nullptr;
         fulfiller.fulfill(kj::mv(status));
       }
     }
@@ -1169,7 +1076,7 @@ bool UnixEventPort::doKqueueWait(struct timespec* timeout) {
   if (n < 0) {
     int error = errno;
     if (error == EINTR) {
-      // We received a signal. The signal handler may have queued an event to the event loop. Even
+      // We received a singal. The signal handler may have queued an event to the event loop. Even
       // if it didn't, we can't simply restart the kevent call because we need to recompute the
       // timeout. Instead, we pretend kevent() returned zero events. This will cause the event
       // loop to spin once, decide it has nothing to do, recompute timeouts, then return to waiting.
@@ -1222,10 +1129,10 @@ bool UnixEventPort::doKqueueWait(struct timespec* timeout) {
 }
 
 bool UnixEventPort::wait() {
-  KJ_IF_SOME(t, timerImpl.timeoutToNextEvent(clock.now(), NANOSECONDS, int(maxValue))) {
+  KJ_IF_MAYBE(t, timerImpl.timeoutToNextEvent(clock.now(), NANOSECONDS, int(maxValue))) {
     struct timespec timeout;
-    timeout.tv_sec = t / 1'000'000'000;
-    timeout.tv_nsec = t % 1'000'000'000;
+    timeout.tv_sec = *t / 1'000'000'000;
+    timeout.tv_nsec = *t % 1'000'000'000;
     return doKqueueWait(&timeout);
   } else {
     return doKqueueWait(nullptr);
@@ -1253,8 +1160,8 @@ UnixEventPort::UnixEventPort()
   // Allocate a pipe to which we'll write a byte in order to wake this thread.
   int fds[2];
   KJ_SYSCALL(pipe(fds));
-  wakePipeIn = kj::OwnFd(fds[0]);
-  wakePipeOut = kj::OwnFd(fds[1]);
+  wakePipeIn = kj::AutoCloseFd(fds[0]);
+  wakePipeOut = kj::AutoCloseFd(fds[1]);
   KJ_SYSCALL(fcntl(wakePipeIn, F_SETFD, FD_CLOEXEC));
   KJ_SYSCALL(fcntl(wakePipeOut, F_SETFD, FD_CLOEXEC));
 #else
@@ -1304,35 +1211,35 @@ void UnixEventPort::FdObserver::fire(short events) {
 #endif
     }
 
-    KJ_IF_SOME(f, readFulfiller) {
-      f->fulfill();
-      readFulfiller = kj::none;
+    KJ_IF_MAYBE(f, readFulfiller) {
+      f->get()->fulfill();
+      readFulfiller = nullptr;
     }
   }
 
   if (events & (POLLOUT | POLLHUP | POLLERR | POLLNVAL)) {
-    KJ_IF_SOME(f, writeFulfiller) {
-      f->fulfill();
-      writeFulfiller = kj::none;
+    KJ_IF_MAYBE(f, writeFulfiller) {
+      f->get()->fulfill();
+      writeFulfiller = nullptr;
     }
   }
 
   if (events & (POLLHUP | POLLERR | POLLNVAL)) {
-    KJ_IF_SOME(f, hupFulfiller) {
-      f->fulfill();
-      hupFulfiller = kj::none;
+    KJ_IF_MAYBE(f, hupFulfiller) {
+      f->get()->fulfill();
+      hupFulfiller = nullptr;
     }
   }
 
   if (events & POLLPRI) {
-    KJ_IF_SOME(f, urgentFulfiller) {
-      f->fulfill();
-      urgentFulfiller = kj::none;
+    KJ_IF_MAYBE(f, urgentFulfiller) {
+      f->get()->fulfill();
+      urgentFulfiller = nullptr;
     }
   }
 
-  if (readFulfiller == kj::none && writeFulfiller == kj::none && urgentFulfiller == kj::none &&
-      hupFulfiller == kj::none) {
+  if (readFulfiller == nullptr && writeFulfiller == nullptr && urgentFulfiller == nullptr &&
+      hupFulfiller == nullptr) {
     // Remove from list.
     if (next == nullptr) {
       eventPort.observersTail = prev;
@@ -1346,9 +1253,9 @@ void UnixEventPort::FdObserver::fire(short events) {
 }
 
 short UnixEventPort::FdObserver::getEventMask() {
-  return (readFulfiller == kj::none ? 0 : (POLLIN | POLLRDHUP)) |
-         (writeFulfiller == kj::none ? 0 : POLLOUT) |
-         (urgentFulfiller == kj::none ? 0 : POLLPRI) |
+  return (readFulfiller == nullptr ? 0 : (POLLIN | POLLRDHUP)) |
+         (writeFulfiller == nullptr ? 0 : POLLOUT) |
+         (urgentFulfiller == nullptr ? 0 : POLLPRI) |
          // The POSIX standard says POLLHUP and POLLERR will be reported even if not requested.
          // But on MacOS, if `events` is 0, then POLLHUP apparently will not be reported:
          //   https://openradar.appspot.com/37537852
@@ -1508,7 +1415,7 @@ bool UnixEventPort::wait() {
       sigaddset(&newMask, ptr->signum);
       ptr = ptr->next;
     }
-    if (childSet != kj::none) {
+    if (childSet != nullptr) {
       sigaddset(&newMask, SIGCHLD);
     }
   }
@@ -1675,16 +1582,6 @@ void UnixEventPort::wake() const {
 }
 
 #endif  // KJ_USE_EPOLL, else KJ_USE_KQUEUE, else
-
-#if !KJ_USE_EPOLL
-void UnixEventPort::updateNextTimerEvent(kj::Maybe<TimePoint> time) {
-  KJ_UNIMPLEMENTED("SleepHooks not used on this platform, this shouldn't be called");
-}
-
-kj::TimePoint UnixEventPort::getTimeWhileSleeping() {
-  KJ_UNIMPLEMENTED("SleepHooks not used on this platform, this shouldn't be called");
-}
-#endif
 
 }  // namespace kj
 

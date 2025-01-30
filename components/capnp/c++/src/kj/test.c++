@@ -23,11 +23,8 @@
 #define _GNU_SOURCE
 #endif
 
-#include <atomic>
-
 #include "test.h"
 #include "main.h"
-#include <kj/glob-filter.h>
 #include "io.h"
 #include "miniposix.h"
 #include <stdlib.h>
@@ -71,25 +68,106 @@ size_t TestCase::iterCount() {
 
 // =======================================================================================
 
+namespace _ {  // private
+
+GlobFilter::GlobFilter(const char* pattern): pattern(heapString(pattern)) {}
+GlobFilter::GlobFilter(ArrayPtr<const char> pattern): pattern(heapString(pattern)) {}
+
+bool GlobFilter::matches(StringPtr name) {
+  // Get out your computer science books. We're implementing a non-deterministic finite automaton.
+  //
+  // Our NDFA has one "state" corresponding to each character in the pattern.
+  //
+  // As you may recall, an NDFA can be transformed into a DFA where every state in the DFA
+  // represents some combination of states in the NDFA. Therefore, we actually have to store a
+  // list of states here. (Actually, what we really want is a set of states, but because our
+  // patterns are mostly non-cyclic a list of states should work fine and be a bit more efficient.)
+
+  // Our state list starts out pointing only at the start of the pattern.
+  states.resize(0);
+  states.add(0);
+
+  Vector<uint> scratch;
+
+  // Iterate through each character in the name.
+  for (char c: name) {
+    // Pull the current set of states off to the side, so that we can populate `states` with the
+    // new set of states.
+    Vector<uint> oldStates = kj::mv(states);
+    states = kj::mv(scratch);
+    states.resize(0);
+
+    // The pattern can omit a leading path. So if we're at a '/' then enter the state machine at
+    // the beginning on the next char.
+    if (c == '/' || c == '\\') {
+      states.add(0);
+    }
+
+    // Process each state.
+    for (uint state: oldStates) {
+      applyState(c, state);
+    }
+
+    // Store the previous state vector for reuse.
+    scratch = kj::mv(oldStates);
+  }
+
+  // If any one state is at the end of the pattern (or at a wildcard just before the end of the
+  // pattern), we have a match.
+  for (uint state: states) {
+    while (state < pattern.size() && pattern[state] == '*') {
+      ++state;
+    }
+    if (state == pattern.size()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void GlobFilter::applyState(char c, int state) {
+  if (state < pattern.size()) {
+    switch (pattern[state]) {
+      case '*':
+        // At a '*', we both re-add the current state and attempt to match the *next* state.
+        if (c != '/' && c != '\\') {  // '*' doesn't match '/'.
+          states.add(state);
+        }
+        applyState(c, state + 1);
+        break;
+
+      case '?':
+        // A '?' matches one character (never a '/').
+        if (c != '/' && c != '\\') {
+          states.add(state + 1);
+        }
+        break;
+
+      default:
+        // Any other character matches only itself.
+        if (c == pattern[state]) {
+          states.add(state + 1);
+        }
+        break;
+    }
+  }
+}
+
+}  // namespace _ (private)
+
+// =======================================================================================
+
 namespace {
 
 class TestExceptionCallback: public ExceptionCallback {
 public:
-  TestExceptionCallback(const ProcessContext& context)
-      : context(context), mainThreadCallback(kj::none) {}
+  TestExceptionCallback(ProcessContext& context): context(context) {}
 
   bool failed() { return sawError; }
 
-  void fail() const {
-    sawError.store(true);
-    KJ_IF_SOME(callback, mainThreadCallback) {
-      callback.fail();
-    }
-  }
-
   void logMessage(LogSeverity severity, const char* file, int line, int contextDepth,
                   String&& text) override {
-    void* traceSpace[32]{};
+    void* traceSpace[32];
     auto trace = getStackTrace(traceSpace, 2);
 
     if (text.size() == 0) {
@@ -99,40 +177,16 @@ public:
     text = kj::str(kj::repeat('_', contextDepth), file, ':', line, ": ", kj::mv(text));
 
     if (severity == LogSeverity::ERROR || severity == LogSeverity::FATAL) {
-      fail();
+      sawError = true;
       context.error(kj::str(text, "\nstack: ", stringifyStackTraceAddresses(trace), stringifyStackTrace(trace)));
     } else {
       context.warning(text);
     }
   }
 
-  Function<void(Function<void()>)> getThreadInitializer() override {
-    return [&](Function<void()> func) {
-      KJ_IF_SOME(callback, mainThreadCallback) {
-        TestExceptionCallback exceptionCallback(context, callback);
-        func();
-      } else {
-        TestExceptionCallback exceptionCallback(context, *this);
-        func();
-      }
-    };
-  }
-
 private:
-  const ProcessContext& context;
-  // In the case where a thread spawns a thread, we report failure to the main thread's
-  // TestExceptionCallback, which I assume stays alive as long as all child threads.  If we reported
-  // failures to a thread's parent, we'd have to worry about a child thread spawning a grandchild
-  // thread and then immediately dying, leaving the grandchild thread with a dangling pointer to the
-  // now-dead child's TestExceptionCallback.
-  kj::Maybe<const TestExceptionCallback&> mainThreadCallback;
-  // sawError is mutable because we need to modify it in const-for-multithreadedness methods.
-  mutable std::atomic_bool sawError = false;
-
-  TestExceptionCallback(const ProcessContext& context,
-      const TestExceptionCallback& topLevelCallback)
-      : context(context), mainThreadCallback(topLevelCallback) {}
-
+  ProcessContext& context;
+  bool sawError = false;
 };
 
 TimePoint readClock() {
@@ -170,9 +224,9 @@ public:
     uint minLine = kj::minValue;
     uint maxLine = kj::maxValue;
 
-    KJ_IF_SOME(colonPos, pattern.findLast(':')) {
+    KJ_IF_MAYBE(colonPos, pattern.findLast(':')) {
       char* end;
-      StringPtr lineStr = pattern.slice(colonPos + 1);
+      StringPtr lineStr = pattern.slice(*colonPos + 1);
 
       bool parsedRange = false;
       minLine = strtoul(lineStr.cStr(), &end, 0);
@@ -192,7 +246,7 @@ public:
 
       if (parsedRange) {
         // We have an exact line number.
-        filePattern = pattern.first(colonPos);
+        filePattern = pattern.slice(0, *colonPos);
       } else {
         // Can't parse as a number. Maybe the colon is part of a Windows path name or something.
         // Let's just keep it as part of the file pattern.
@@ -201,7 +255,7 @@ public:
       }
     }
 
-    kj::GlobFilter filter(filePattern);
+    _::GlobFilter filter(filePattern);
 
     for (TestCase* testCase = testCasesHead; testCase != nullptr; testCase = testCase->next) {
       if (!testCase->matchedFilter && filter.matches(testCase->file) &&
@@ -219,8 +273,8 @@ public:
   }
 
   MainBuilder::Validity setBenchmarkIters(StringPtr param) {
-    KJ_IF_SOME(i, param.tryParseAs<size_t>()) {
-      benchmarkIterCount = i;
+    KJ_IF_MAYBE(i, param.tryParseAs<size_t>()) {
+      benchmarkIterCount = *i;
       return true;
     } else {
       return "expected an integer";
@@ -237,7 +291,7 @@ public:
     for (TestCase* testCase = testCasesHead; testCase != nullptr; testCase = testCase->next) {
       for (size_t i: kj::indices(commonPrefix)) {
         if (testCase->file[i] != commonPrefix[i]) {
-          commonPrefix = commonPrefix.first(i);
+          commonPrefix = commonPrefix.slice(0, i);
           break;
         }
       }
@@ -245,7 +299,7 @@ public:
 
     // Back off the prefix to the last '/'.
     while (commonPrefix.size() > 0 && commonPrefix.back() != '/' && commonPrefix.back() != '\\') {
-      commonPrefix = commonPrefix.first(commonPrefix.size() - 1);
+      commonPrefix = commonPrefix.slice(0, commonPrefix.size() - 1);
     }
 
     // Run the testts.
@@ -261,12 +315,12 @@ public:
         if (!listOnly) {
           bool currentFailed = true;
           auto start = readClock();
-          KJ_IF_SOME(exception, runCatchingExceptions([&]() {
+          KJ_IF_MAYBE(exception, runCatchingExceptions([&]() {
             TestExceptionCallback exceptionCallback(context);
             testCase->run();
             currentFailed = exceptionCallback.failed();
           })) {
-            context.error(kj::str(exception));
+            context.error(kj::str(*exception));
           }
           auto end = readClock();
 
@@ -303,7 +357,7 @@ private:
   };
 
   void write(StringPtr text) {
-    FdOutputStream(STDOUT_FILENO).write(text.asBytes());
+    FdOutputStream(STDOUT_FILENO).write(text.begin(), text.size());
   }
 
   void write(Color color, StringPtr prefix, StringPtr message) {

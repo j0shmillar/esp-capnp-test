@@ -323,8 +323,8 @@ void genericCheckTestMessage(Reader reader) {
 #define as template as
 
 Text::Reader name(DynamicEnum e) {
-  KJ_IF_SOME(schema, e.getEnumerant()) {
-    return schema.getProto().getName();
+  KJ_IF_MAYBE(schema, e.getEnumerant()) {
+    return schema->getProto().getName();
   } else {
     return "(unknown enumerant)";
   }
@@ -890,8 +890,7 @@ void checkDynamicTestMessageAllZero(DynamicStruct::Reader reader) {
 
 #if !CAPNP_LITE
 
-TestInterfaceImpl::TestInterfaceImpl(int& callCount, kj::Maybe<int&> handleCount)
-    : callCount(callCount), handleCount(handleCount) {}
+TestInterfaceImpl::TestInterfaceImpl(int& callCount): callCount(callCount) {}
 
 kj::Promise<void> TestInterfaceImpl::foo(FooContext context) {
   ++callCount;
@@ -910,24 +909,6 @@ kj::Promise<void> TestInterfaceImpl::baz(BazContext context) {
   context.releaseParams();
   EXPECT_ANY_THROW(context.getParams());
 
-  return kj::READY_NOW;
-}
-
-kj::Promise<void> TestInterfaceImpl::getTestPipeline(GetTestPipelineContext context) {
-  context.getResults().setCap(kj::heap<TestPipelineImpl>(callCount));
-  return kj::READY_NOW;
-}
-kj::Promise<void> TestInterfaceImpl::getTestTailCallee(GetTestTailCalleeContext context) {
-  context.getResults().setCap(kj::heap<TestTailCalleeImpl>(callCount));
-  return kj::READY_NOW;
-}
-kj::Promise<void> TestInterfaceImpl::getTestTailCaller(GetTestTailCallerContext context) {
-  context.getResults().setCap(kj::heap<TestTailCallerImpl>(callCount));
-  return kj::READY_NOW;
-}
-kj::Promise<void> TestInterfaceImpl::getTestMoreStuff(GetTestMoreStuffContext context) {
-  context.getResults().setCap(
-      kj::heap<TestMoreStuffImpl>(callCount, KJ_REQUIRE_NONNULL(handleCount)));
   return kj::READY_NOW;
 }
 
@@ -1182,22 +1163,22 @@ kj::Promise<void> TestMoreStuffImpl::writeToFd(WriteToFdContext context) {
 
   promises.add(params.getFdCap1().getFd()
       .then([](kj::Maybe<int> fd) {
-    kj::FdOutputStream(KJ_ASSERT_NONNULL(fd)).write("foo"_kjb);
+    kj::FdOutputStream(KJ_ASSERT_NONNULL(fd)).write("foo", 3);
   }));
   promises.add(params.getFdCap2().getFd()
       .then([context](kj::Maybe<int> fd) mutable {
-    context.getResults().setSecondFdPresent(fd != kj::none);
-    KJ_IF_SOME(f, fd) {
-      kj::FdOutputStream(f).write("bar"_kjb);
+    context.getResults().setSecondFdPresent(fd != nullptr);
+    KJ_IF_MAYBE(f, fd) {
+      kj::FdOutputStream(*f).write("bar", 3);
     }
   }));
 
-  int pair[2]{};
+  int pair[2];
   KJ_SYSCALL(kj::miniposix::pipe(pair));
-  kj::OwnFd in(pair[0]);
-  kj::OwnFd out(pair[1]);
+  kj::AutoCloseFd in(pair[0]);
+  kj::AutoCloseFd out(pair[1]);
 
-  kj::FdOutputStream(kj::mv(out)).write("baz"_kjb);
+  kj::FdOutputStream(kj::mv(out)).write("baz", 3);
   context.getResults().setFdCap3(kj::heap<TestFdCap>(kj::mv(in)));
 
   return kj::joinPromises(promises.finish());
@@ -1209,13 +1190,6 @@ kj::Promise<void> TestMoreStuffImpl::throwException(ThrowExceptionContext contex
 
 kj::Promise<void> TestMoreStuffImpl::throwRemoteException(ThrowRemoteExceptionContext context) {
   return KJ_EXCEPTION(FAILED, "remote exception: test exception");
-}
-
-kj::Promise<void> TestMoreStuffImpl::throwExceptionWithDetail(
-    ThrowExceptionWithDetailContext context) {
-  auto e = KJ_EXCEPTION(FAILED, "test exception");
-  e.setDetail(1, kj::heapArray<byte>("foo"_kjb));
-  return e;
 }
 
 #endif  // !CAPNP_LITE

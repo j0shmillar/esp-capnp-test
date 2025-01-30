@@ -21,9 +21,11 @@
 
 #pragma once
 
+#include "string.h"
 #include "vector.h"
 #include "async-io.h"
 #include <stdint.h>
+#include "one-of.h"
 #include "cidr.h"
 
 KJ_BEGIN_HEADER
@@ -32,9 +34,6 @@ struct sockaddr;
 struct sockaddr_un;
 
 namespace kj {
-
-class StringPtr;
-
 namespace _ {  // private
 
 // =======================================================================================

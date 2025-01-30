@@ -9,9 +9,6 @@
 .dist-buildwrapper
 /c++/gen/
 
-# VS Code config
-.vscode/
-
 # Code you may want to map in from elsewhere.
 /c++/src/base
 /c++/src/capnp/compilerbin

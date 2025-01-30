@@ -167,7 +167,7 @@ public:
   // MsgWaitForMultipleObjectsEx() to wait on some handles at the same time as messages).
 
   Own<Win32EventPort::SignalObserver> observeSignalState(HANDLE handle);
-  // Implements Win32EventPort::observeSignalState().
+  // Implemetns Win32EventPort::observeSignalState().
 
   uint prepareMainThreadWait(HANDLE* handles[]);
   // Call immediately before invoking WaitForMultipleObjects() or similar in the main thread.

@@ -26,17 +26,17 @@
 #include <capnp/schema.capnp.h>
 #include <capnp/dynamic.h>
 #include <kj/vector.h>
+#include <kj/one-of.h>
 #include "error-reporter.h"
 #include "resolver.h"
+#include "generics.h"
+#include <map>
 
 CAPNP_BEGIN_HEADER
 
 namespace capnp {
 namespace compiler {
 
-struct ImplicitParams;
-class BrandScope;
-class BrandedDecl;
 class NodeTranslator {
   // Translates one node in the schema from AST form to final schema form.  A "node" is anything
   // that has a unique ID, such as structs, enums, constants, and annotations, but not fields,
@@ -168,7 +168,7 @@ private:
 
   void compileBootstrapValue(
       Expression::Reader source, schema::Type::Reader type, schema::Value::Builder target,
-      kj::Maybe<Schema> typeScope = kj::none);
+      kj::Maybe<Schema> typeScope = nullptr);
   // Calls compileValue() if this value should be interpreted at bootstrap time.  Otherwise,
   // adds the value to `unfinishedValues` for later evaluation.
   //

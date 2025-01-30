@@ -39,7 +39,6 @@
 #include <errno.h>
 #include <atomic>
 #include "mutex.h"
-#include <poll.h>
 
 #if KJ_USE_EPOLL
 #include <sys/epoll.h>
@@ -118,7 +117,9 @@ bool checkForQemuEpollPwaitBug() {
 
   KJ_SYSCALL(sigaction(SIGURG, &action, nullptr));
 
-  auto efd = KJ_SYSCALL_FD(epoll_create1(EPOLL_CLOEXEC));
+  int efd;
+  KJ_SYSCALL(efd = epoll_create1(EPOLL_CLOEXEC));
+  KJ_DEFER(close(efd));
 
   kill(getpid(), SIGURG);
   KJ_ASSERT(!qemuBugTestSignalHandlerRan);
@@ -129,7 +130,7 @@ bool checkForQemuEpollPwaitBug() {
   KJ_ASSERT(errno == EINTR);
 
 #if !__aarch64__
-  // qemu-user should only be used to execute aarch64 binaries so we shouldn't see this bug
+  // qemu-user should only be used to execute aarch64 binaries so we should'nt see this bug
   // elsewhere!
   KJ_ASSERT(qemuBugTestSignalHandlerRan);
 #endif
@@ -365,9 +366,9 @@ TEST(AsyncUnixTest, ReadObserver) {
   EventLoop loop(port);
   WaitScope waitScope(loop);
 
-  int pipefds[2]{};
+  int pipefds[2];
   KJ_SYSCALL(pipe(pipefds));
-  kj::OwnFd infd(pipefds[0]), outfd(pipefds[1]);
+  kj::AutoCloseFd infd(pipefds[0]), outfd(pipefds[1]);
 
   UnixEventPort::FdObserver observer(port, infd, UnixEventPort::FdObserver::OBSERVE_READ);
 
@@ -378,7 +379,7 @@ TEST(AsyncUnixTest, ReadObserver) {
 #if __linux__  // platform known to support POLLRDHUP
   EXPECT_FALSE(KJ_ASSERT_NONNULL(observer.atEndHint()));
 
-  char buffer[4096]{};
+  char buffer[4096];
   ssize_t n;
   KJ_SYSCALL(n = read(infd, &buffer, sizeof(buffer)));
   EXPECT_EQ(3, n);
@@ -398,7 +399,7 @@ TEST(AsyncUnixTest, ReadObserverMultiListen) {
   EventLoop loop(port);
   WaitScope waitScope(loop);
 
-  int bogusPipefds[2]{};
+  int bogusPipefds[2];
   KJ_SYSCALL(pipe(bogusPipefds));
   KJ_DEFER({ close(bogusPipefds[1]); close(bogusPipefds[0]); });
 
@@ -411,7 +412,7 @@ TEST(AsyncUnixTest, ReadObserverMultiListen) {
     ADD_FAILURE() << kj::str(exception).cStr();
   });
 
-  int pipefds[2]{};
+  int pipefds[2];
   KJ_SYSCALL(pipe(pipefds));
   KJ_DEFER({ close(pipefds[1]); close(pipefds[0]); });
 
@@ -428,7 +429,7 @@ TEST(AsyncUnixTest, ReadObserverMultiReceive) {
   EventLoop loop(port);
   WaitScope waitScope(loop);
 
-  int pipefds[2]{};
+  int pipefds[2];
   KJ_SYSCALL(pipe(pipefds));
   KJ_DEFER({ close(pipefds[1]); close(pipefds[0]); });
 
@@ -436,7 +437,7 @@ TEST(AsyncUnixTest, ReadObserverMultiReceive) {
       UnixEventPort::FdObserver::OBSERVE_READ);
   KJ_SYSCALL(write(pipefds[1], "foo", 3));
 
-  int pipefds2[2]{};
+  int pipefds2[2];
   KJ_SYSCALL(pipe(pipefds2));
   KJ_DEFER({ close(pipefds2[1]); close(pipefds2[0]); });
 
@@ -461,9 +462,9 @@ TEST(AsyncUnixTest, ReadObserverAndSignals) {
 
   auto signalPromise = port.onSignal(SIGIO);
 
-  int pipefds[2]{};
+  int pipefds[2];
   KJ_SYSCALL(pipe(pipefds));
-  kj::OwnFd infd(pipefds[0]), outfd(pipefds[1]);
+  kj::AutoCloseFd infd(pipefds[0]), outfd(pipefds[1]);
 
   UnixEventPort::FdObserver observer(port, infd, UnixEventPort::FdObserver::OBSERVE_READ);
 
@@ -483,7 +484,7 @@ TEST(AsyncUnixTest, ReadObserverAsync) {
   WaitScope waitScope(loop);
 
   // Make a pipe and wait on its read end while another thread writes to it.
-  int pipefds[2]{};
+  int pipefds[2];
   KJ_SYSCALL(pipe(pipefds));
   KJ_DEFER({ close(pipefds[1]); close(pipefds[0]); });
   UnixEventPort::FdObserver observer(port, pipefds[0],
@@ -506,13 +507,13 @@ TEST(AsyncUnixTest, ReadObserverNoWait) {
   EventLoop loop(port);
   WaitScope waitScope(loop);
 
-  int pipefds[2]{};
+  int pipefds[2];
   KJ_SYSCALL(pipe(pipefds));
   KJ_DEFER({ close(pipefds[1]); close(pipefds[0]); });
   UnixEventPort::FdObserver observer(port, pipefds[0],
       UnixEventPort::FdObserver::OBSERVE_READ);
 
-  int pipefds2[2]{};
+  int pipefds2[2];
   KJ_SYSCALL(pipe(pipefds2));
   KJ_DEFER({ close(pipefds2[1]); close(pipefds2[0]); });
   UnixEventPort::FdObserver observer2(port, pipefds2[0],
@@ -558,9 +559,9 @@ TEST(AsyncUnixTest, WriteObserver) {
   EventLoop loop(port);
   WaitScope waitScope(loop);
 
-  int pipefds[2]{};
+  int pipefds[2];
   KJ_SYSCALL(pipe(pipefds));
-  kj::OwnFd infd(pipefds[0]), outfd(pipefds[1]);
+  kj::AutoCloseFd infd(pipefds[0]), outfd(pipefds[1]);
   setNonblocking(outfd);
   setNonblocking(infd);
 
@@ -586,7 +587,7 @@ TEST(AsyncUnixTest, WriteObserver) {
   // high watermark / low watermark heuristic which means that only reading one byte is not
   // sufficient. The amount we have to read is in fact architecture-dependent -- it appears to be
   // 1 page. To be safe, we read everything.
-  char buffer[4096]{};
+  char buffer[4096];
   do {
     KJ_NONBLOCKING_SYSCALL(n = read(infd, &buffer, sizeof(buffer)));
   } while (n > 0);
@@ -610,10 +611,12 @@ TEST(AsyncUnixTest, UrgentObserver) {
   UnixEventPort port;
   EventLoop loop(port);
   WaitScope waitScope(loop);
+  int tmpFd;
   char c;
 
   // Spawn a TCP server
-  auto serverFd = KJ_SYSCALL_FD(socket(AF_INET, SOCK_STREAM, 0));
+  KJ_SYSCALL(tmpFd = socket(AF_INET, SOCK_STREAM, 0));
+  kj::AutoCloseFd serverFd(tmpFd);
   sockaddr_in saddr;
   memset(&saddr, 0, sizeof(saddr));
   saddr.sin_family = AF_INET;
@@ -624,7 +627,7 @@ TEST(AsyncUnixTest, UrgentObserver) {
   KJ_SYSCALL(listen(serverFd, 1));
 
   // Create a pipe that we'll use to signal if MSG_OOB return EINVAL.
-  int failpipe[2]{};
+  int failpipe[2];
   KJ_SYSCALL(pipe(failpipe));
   KJ_DEFER({
     close(failpipe[0]);
@@ -633,11 +636,13 @@ TEST(AsyncUnixTest, UrgentObserver) {
 
   // Accept one connection, send in-band and OOB byte, wait for a quit message
   Thread thread([&]() {
+    int tmpFd;
     char c;
 
     sockaddr_in caddr;
     socklen_t caddrLen = sizeof(caddr);
-    auto clientFd = KJ_SYSCALL_FD(accept(serverFd, reinterpret_cast<sockaddr*>(&caddr), &caddrLen));
+    KJ_SYSCALL(tmpFd = accept(serverFd, reinterpret_cast<sockaddr*>(&caddr), &caddrLen));
+    kj::AutoCloseFd clientFd(tmpFd);
     delay();
 
     // Workaround: OS X won't signal POLLPRI without POLLIN. Also enqueue some in-band data.
@@ -658,7 +663,8 @@ TEST(AsyncUnixTest, UrgentObserver) {
   });
   KJ_DEFER({ shutdown(serverFd, SHUT_RDWR); serverFd = nullptr; });
 
-  auto clientFd = KJ_SYSCALL_FD(socket(AF_INET, SOCK_STREAM, 0));
+  KJ_SYSCALL(tmpFd = socket(AF_INET, SOCK_STREAM, 0));
+  kj::AutoCloseFd clientFd(tmpFd);
   KJ_SYSCALL(connect(clientFd, reinterpret_cast<sockaddr*>(&saddr), saddrLen));
 
   UnixEventPort::FdObserver observer(port, clientFd,
@@ -868,10 +874,10 @@ struct TestChild {
   }
 
   ~TestChild() noexcept(false) {
-    KJ_IF_SOME(p, pid) {
-      KJ_SYSCALL(::kill(p, SIGKILL)) { return; }
+    KJ_IF_MAYBE(p, pid) {
+      KJ_SYSCALL(::kill(*p, SIGKILL)) { return; }
       int status;
-      KJ_SYSCALL(waitpid(p, &status, 0)) { return; }
+      KJ_SYSCALL(waitpid(*p, &status, 0)) { return; }
     }
   }
 
@@ -938,9 +944,9 @@ KJ_TEST("UnixEventPort whenWriteDisconnected()") {
   EventLoop loop(port);
   WaitScope waitScope(loop);
 
-  int fds_[2]{};
+  int fds_[2];
   KJ_SYSCALL(socketpair(AF_UNIX, SOCK_STREAM, 0, fds_));
-  kj::OwnFd fds[2] = { kj::OwnFd(fds_[0]), kj::OwnFd(fds_[1]) };
+  kj::AutoCloseFd fds[2] = { kj::AutoCloseFd(fds_[0]), kj::AutoCloseFd(fds_[1]) };
 
   UnixEventPort::FdObserver observer(port, fds[0], UnixEventPort::FdObserver::OBSERVE_READ);
 
@@ -959,7 +965,7 @@ KJ_TEST("UnixEventPort whenWriteDisconnected()") {
   readablePromise.wait(waitScope);
 
   {
-    char junk[16]{};
+    char junk[16];
     ssize_t n;
     KJ_SYSCALL(n = read(fds[0], junk, 16));
     KJ_EXPECT(n == 3);
@@ -984,9 +990,9 @@ KJ_TEST("UnixEventPort FdObserver(..., flags=0)::whenWriteDisconnected()") {
   EventLoop loop(port);
   WaitScope waitScope(loop);
 
-  int pipefds[2]{};
+  int pipefds[2];
   KJ_SYSCALL(pipe(pipefds));
-  kj::OwnFd infd(pipefds[0]), outfd(pipefds[1]);
+  kj::AutoCloseFd infd(pipefds[0]), outfd(pipefds[1]);
 
   UnixEventPort::FdObserver observer(port, outfd, 0);
 
@@ -1112,248 +1118,6 @@ KJ_TEST("UnixEventPort thread-specific signals") {
   }
 }
 #endif
-
-#if KJ_USE_EPOLL
-KJ_TEST("UnixEventPoll::getPollableFd() for external waiting") {
-  kj::UnixEventPort port;
-  kj::EventLoop loop(port);
-  kj::WaitScope ws(loop);
-
-  auto portIsReady = [&port](int timeout = 0) {
-    struct pollfd pfd;
-    memset(&pfd, 0, sizeof(pfd));
-    pfd.events = POLLIN;
-    pfd.fd = port.getPollableFd();
-
-    int n;
-    KJ_SYSCALL(n = poll(&pfd, 1, timeout));
-    return n > 0;
-  };
-
-  // Test wakeup on observed FD.
-  {
-    int pair[2]{};
-    KJ_SYSCALL(pipe(pair));
-    kj::OwnFd in(pair[0]);
-    kj::OwnFd out(pair[1]);
-
-    kj::UnixEventPort::FdObserver observer(port, in, kj::UnixEventPort::FdObserver::OBSERVE_READ);
-    auto promise = observer.whenBecomesReadable();
-
-    KJ_EXPECT(!promise.poll(ws));
-    ws.poll();
-    port.preparePollableFdForSleep();
-
-    KJ_EXPECT(!portIsReady());
-
-    KJ_SYSCALL(write(out, "a", 1));
-
-    KJ_EXPECT(portIsReady());
-
-    KJ_ASSERT(promise.poll(ws));
-    promise.wait(ws);
-  }
-
-  // Test wakeup due to queuing work to the event loop in-process.
-  {
-    ws.poll();
-    port.preparePollableFdForSleep();
-
-    KJ_EXPECT(!portIsReady());
-
-    auto promise = yield().eagerlyEvaluate(nullptr);
-
-    KJ_EXPECT(portIsReady());
-    KJ_ASSERT(promise.poll(ws));
-    promise.wait(ws);
-  }
-
-  // Test wakeup on timeout.
-  {
-    auto promise = port.getTimer().afterDelay(50 * kj::MILLISECONDS);
-
-    KJ_EXPECT(!promise.poll(ws));
-    ws.poll();
-    port.preparePollableFdForSleep();
-
-    KJ_EXPECT(!portIsReady());
-
-    usleep(50'000);
-
-    KJ_EXPECT(portIsReady());
-
-    KJ_ASSERT(promise.poll(ws));
-    promise.wait(ws);
-  }
-
-  // Test wakeup on time in past. This verifies timerfd_settime() won't just silently fail if the
-  // time is already past.
-  {
-    ws.poll();
-
-    // Schedule time event in the past.
-    auto promise = port.getTimer().atTime(kj::origin<TimePoint>() + 1 * SECONDS);
-
-    // As of this writing, atTime() doesn't do any special handling of times in the past, e.g. to
-    // immediately resolve the promise. It goes ahead and schedules them like any other I/O. So
-    // scheduling such a promise will not immediately schedule work on the event loop, and
-    // preparePollableFdForSleep() will in fact go and timerfd_settime() to a time in the past. (If
-    // this changes, we'll need to structure this test differently I guess.)
-    KJ_EXPECT(!loop.isRunnable());
-
-    port.preparePollableFdForSleep();
-
-    // Uhhhh... Apparently when timerfd_settime() sets a time in the past, the timerfd does NOT
-    // immediately become readable. The kernel still needs to process the timer in the background
-    // before it raises the event. So we will need to give it some time... we give it 10ms here.
-    KJ_EXPECT(portIsReady(10));
-
-    KJ_ASSERT(promise.poll(ws));
-    promise.wait(ws);
-  }
-
-  // Test wakeup when a timer event is created during sleep.
-  {
-    ws.poll();
-    auto startTime = port.getTimer().now();
-    port.preparePollableFdForSleep();
-
-    KJ_EXPECT(!portIsReady());
-
-    // When sleeping, passage of real time updates `timer.now()`.
-    usleep(50'000);
-    KJ_EXPECT(port.getTimer().now() - startTime >= 50 * MILLISECONDS);
-
-    // We can set a timer now, and the epoll FD will wake up when it expires, even though no timer
-    // was set when `preparePollableFdForSleep()` was called.
-    auto promise = port.getTimer().afterDelay(50 * MILLISECONDS);
-
-    // It won't expire too early: the delay was added to the real time, not the last time the
-    // timer was advanced to.
-    KJ_EXPECT(!portIsReady(10));
-    KJ_EXPECT(portIsReady(40));
-
-    KJ_ASSERT(promise.poll(ws));
-    promise.wait(ws);
-  }
-}
-
-KJ_TEST("m:n threads:EventLoops") {
-  // This test shows that it's possible for an EventLoop to switch threads, and for a thread to
-  // switch event loops.
-
-  UnixEventPort port1;
-  EventLoop loop1(port1);
-
-  UnixEventPort port2;
-  EventLoop loop2(port2);
-
-  kj::TimePoint startTime = kj::origin<TimePoint>();
-  kj::Promise<void> promise1 = nullptr;
-  PromiseCrossThreadFulfillerPair<void> xpaf { nullptr, {} };
-  const Executor* executor;
-
-  {
-    WaitScope ws1(loop1);
-    ws1.poll();
-    startTime = port1.getTimer().now();
-    promise1 = port1.getTimer().afterDelay(10 * kj::MILLISECONDS);
-    xpaf = kj::newPromiseAndCrossThreadFulfiller<void>();
-    executor = &getCurrentThreadExecutor();
-  }
-
-  static thread_local uint threadId = 0;
-
-  threadId = 1;
-
-  kj::Thread thread([&]() noexcept {
-    threadId = 2;
-
-    WaitScope ws1(loop1);
-    promise1.wait(ws1);
-    KJ_EXPECT(port1.getTimer().now() - startTime >= 10 * kj::MILLISECONDS);
-
-    xpaf.promise.wait(ws1);
-  });
-
-  [&]() noexcept {
-    WaitScope ws2(loop2);
-
-    // The `executor` we captured earlier is tied to loop1, which has changed threads, so code we
-    // schedule on it will run there.
-    uint remoteThreadId = executor->executeAsync([&]() {
-      return threadId;
-    }).wait(ws2);
-    KJ_EXPECT(remoteThreadId == 2);
-    KJ_EXPECT(threadId == 1);
-
-    xpaf.fulfiller->fulfill();
-  }();
-}
-#endif
-
-KJ_TEST("yieldUntilWouldSleep") {
-  UnixEventPort port;
-  EventLoop loop(port);
-  WaitScope waitScope(loop);
-
-  bool resolved = false;
-  auto yield = yieldUntilWouldSleep()
-      .then([&]() { resolved = true; })
-      .eagerlyEvaluate(nullptr);
-
-  KJ_EXPECT(!resolved);
-
-  // yieldUntilQueueEmpty() doesn't sleep.
-  yieldUntilQueueEmpty().wait(waitScope);
-  KJ_EXPECT(!resolved);
-
-  // Receiving an I/O event doesn't sleep.
-  {
-    int pair[2]{};
-    KJ_SYSCALL(pipe(pair));
-    kj::OwnFd in(pair[0]);
-    kj::OwnFd out(pair[1]);
-
-    kj::UnixEventPort::FdObserver observer(port, in, kj::UnixEventPort::FdObserver::OBSERVE_READ);
-    auto promise = observer.whenBecomesReadable();
-
-    FdOutputStream(out.get()).write("foo"_kj.asBytes());
-    KJ_ASSERT(promise.poll(waitScope));
-    promise.wait(waitScope);
-  }
-
-  // We didn't sleep.
-  KJ_EXPECT(!resolved);
-
-  // Receiving an already-ready timer event doesn't sleep.
-  {
-    auto& timer = port.getTimer();
-    auto target = timer.now() + 1 * kj::MILLISECONDS;
-
-    // Splin until `target` is actually in the past.
-    while (kj::systemPreciseMonotonicClock().now() < target) {}
-
-    // Now wait. This should not cause any sleep.
-    timer.atTime(target).wait(waitScope);
-  }
-
-  // We still haven't slept.
-  KJ_EXPECT(!resolved);
-
-  // Receiving a cross-thread event doesn't sleep.
-  {
-    auto paf = kj::newPromiseAndCrossThreadFulfiller<void>();
-    paf.fulfiller->fulfill();
-    paf.promise.wait(waitScope);
-  }
-
-  // We still haven't slept.
-  KJ_EXPECT(!resolved);
-
-  // Now actually sleep. We wake up right away.
-  yield.wait(waitScope);
-}
 
 }  // namespace
 }  // namespace kj

@@ -160,14 +160,14 @@ public:
   }
 
   Promise<ReadResult> tryReadWithFds(void* buffer, size_t minBytes, size_t maxBytes,
-                                     OwnFd* fdBuffer, size_t maxFds) override {
+                                     AutoCloseFd* fdBuffer, size_t maxFds) override {
     return tryReadInternal(buffer, minBytes, maxBytes, fdBuffer, maxFds, {0,0});
   }
 
   Promise<ReadResult> tryReadWithStreams(
       void* buffer, size_t minBytes, size_t maxBytes,
       Own<AsyncCapabilityStream>* streamBuffer, size_t maxStreams) override {
-    auto fdBuffer = kj::heapArray<OwnFd>(maxStreams);
+    auto fdBuffer = kj::heapArray<AutoCloseFd>(maxStreams);
     auto promise = tryReadInternal(buffer, minBytes, maxBytes, fdBuffer.begin(), maxStreams, {0,0});
 
     return promise.then([this, fdBuffer = kj::mv(fdBuffer), streamBuffer]
@@ -181,9 +181,9 @@ public:
     });
   }
 
-  Promise<void> write(ArrayPtr<const byte> buffer) override {
+  Promise<void> write(const void* buffer, size_t size) override {
     ssize_t n;
-    KJ_NONBLOCKING_SYSCALL(n = ::write(fd, buffer.begin(), buffer.size())) {
+    KJ_NONBLOCKING_SYSCALL(n = ::write(fd, buffer, size)) {
       // Error.
 
       // We can't "return kj::READY_NOW;" inside this block because it causes a memory leak due to
@@ -199,10 +199,10 @@ public:
 
     if (n < 0) {
       // EAGAIN -- need to wait for writability and try again.
-      return observer.whenBecomesWritable().then([buffer, this]() {
-        return write(buffer);
+      return observer.whenBecomesWritable().then([=]() {
+        return write(buffer, size);
       });
-    } else if (n == buffer.size()) {
+    } else if (n == size) {
       // All done.
       return READY_NOW;
     } else {
@@ -210,8 +210,9 @@ public:
       // Linux is known to return partial reads/writes when interrupted by a signal -- yes, even
       // for non-blocking operations. So, we'll need to write() again now, even though it will
       // almost certainly fail with EAGAIN. See comments in the read path for more info.
-      buffer = buffer.slice(n);
-      return write(buffer);
+      buffer = reinterpret_cast<const byte*>(buffer) + n;
+      size -= n;
+      return write(buffer, size);
     }
   }
 
@@ -242,20 +243,20 @@ public:
   Maybe<Promise<uint64_t>> tryPumpFrom(
       AsyncInputStream& input, uint64_t amount = kj::maxValue) override {
 #if __linux__ && !__ANDROID__
-    KJ_IF_SOME(sock, kj::dynamicDowncastIfAvailable<AsyncStreamFd>(input)) {
-      return pumpFromOther(sock, amount);
+    KJ_IF_MAYBE(sock, kj::dynamicDowncastIfAvailable<AsyncStreamFd>(input)) {
+      return pumpFromOther(*sock, amount);
     }
 #endif
 
 #if __linux__
-    KJ_IF_SOME(file, kj::dynamicDowncastIfAvailable<FileInputStream>(input)) {
-      KJ_IF_SOME(fd, file.getUnderlyingFile().getFd()) {
-        return pumpFromFile(file, fd, amount, 0);
+    KJ_IF_MAYBE(file, kj::dynamicDowncastIfAvailable<FileInputStream>(input)) {
+      KJ_IF_MAYBE(fd, file->getUnderlyingFile().getFd()) {
+        return pumpFromFile(*file, *fd, amount, 0);
       }
     }
 #endif
 
-    return kj::none;
+    return nullptr;
   }
 
 #if __linux__
@@ -316,7 +317,7 @@ private:
     // be fully satisfied immediately. This optimizes for the case of small streams, e.g. a short
     // HTTP body.
 
-    byte buffer[4096]{};
+    byte buffer[4096];
     size_t pos = 0;
     size_t initialAmount = kj::min(sizeof(buffer), amount);
 
@@ -346,7 +347,7 @@ private:
         // Oh crap, the output buffer is full. This should be rare. But, now we're going to have
         // to copy the remaining bytes into the heap to do an async write.
         auto leftover = kj::heapArray<byte>(buffer + n, pos - n);
-        auto promise = write(leftover);
+        auto promise = write(leftover.begin(), leftover.size());
         promise = promise.attach(kj::mv(leftover));
         if (eof || pos == amount) {
           return promise.then([pos]() -> uint64_t { return pos; });
@@ -407,7 +408,7 @@ private:
     // we allocate here to avoid coming close to the hard limit, but that's a lot of effort so I'm
     // not going to bother!
 
-    int pipeFds[2]{};
+    int pipeFds[2];
     KJ_SYSCALL_HANDLE_ERRORS(pipe2(pipeFds, O_NONBLOCK | O_CLOEXEC)) {
       case ENFILE:
         // Probably hit the limit on pipe buffers, fall back to unoptimized pump.
@@ -416,7 +417,7 @@ private:
         KJ_FAIL_SYSCALL("pipe2()", error);
     }
 
-    OwnFd pipeIn(pipeFds[0]), pipeOut(pipeFds[1]);
+    AutoCloseFd pipeIn(pipeFds[0]), pipeOut(pipeFds[1]);
 
     return splicePumpLoop(input, pipeFds[0], pipeFds[1], readSoFar, limit, 0)
         .attach(kj::mv(pipeIn), kj::mv(pipeOut));
@@ -474,8 +475,8 @@ public:
 #endif  // __linux__ && !__ANDROID__
 
   Promise<void> whenWriteDisconnected() override {
-    KJ_IF_SOME(p, writeDisconnectedPromise) {
-      return p.addBranch();
+    KJ_IF_MAYBE(p, writeDisconnectedPromise) {
+      return p->addBranch();
     } else {
       auto fork = observer.whenWriteDisconnected().fork();
       auto result = fork.addBranch();
@@ -557,14 +558,14 @@ private:
   Maybe<Function<void(ArrayPtr<AncillaryMessage>)>> ancillaryMsgCallback;
 
   Promise<ReadResult> tryReadInternal(void* buffer, size_t minBytes, size_t maxBytes,
-                                      OwnFd* fdBuffer, size_t maxFds,
+                                      AutoCloseFd* fdBuffer, size_t maxFds,
                                       ReadResult alreadyRead) {
     // `alreadyRead` is the number of bytes we have already received via previous reads -- minBytes,
     // maxBytes, and buffer have already been adjusted to account for them, but this count must
     // be included in the final return value.
 
     ssize_t n;
-    if (maxFds == 0 && ancillaryMsgCallback == kj::none) {
+    if (maxFds == 0 && ancillaryMsgCallback == nullptr) {
       KJ_NONBLOCKING_SYSCALL(n = ::read(fd, buffer, maxBytes)) {
         // Error.
 
@@ -587,7 +588,7 @@ private:
 
       // Allocate space to receive a cmsg.
       size_t msgBytes;
-      if (ancillaryMsgCallback == kj::none) {
+      if (ancillaryMsgCallback == nullptr) {
 #if __APPLE__ || __FreeBSD__
         // Until very recently (late 2018 / early 2019), FreeBSD suffered from a bug in which when
         // an SCM_RIGHTS message was truncated on delivery, it would not close the FDs that weren't
@@ -669,16 +670,16 @@ private:
             auto len = kj::min(cmsg->cmsg_len, spaceLeft);
             auto data = arrayPtr(reinterpret_cast<int*>(CMSG_DATA(cmsg)),
                                  (len - CMSG_LEN(0)) / sizeof(int));
-            kj::Vector<kj::OwnFd> trashFds;
+            kj::Vector<kj::AutoCloseFd> trashFds;
             for (auto fd: data) {
-              kj::OwnFd ownFd(fd);
+              kj::AutoCloseFd ownFd(fd);
               if (nfds < maxFds) {
                 fdBuffer[nfds++] = kj::mv(ownFd);
               } else {
                 trashFds.add(kj::mv(ownFd));
               }
             }
-          } else if (spaceLeft >= CMSG_LEN(0) && ancillaryMsgCallback != kj::none) {
+          } else if (spaceLeft >= CMSG_LEN(0) && ancillaryMsgCallback != nullptr) {
             auto len = kj::min(cmsg->cmsg_len, spaceLeft);
             auto data = ArrayPtr<const byte>(CMSG_DATA(cmsg), len - CMSG_LEN(0));
             ancillaryMessages.add(cmsg->cmsg_level, cmsg->cmsg_type, data);
@@ -698,8 +699,8 @@ private:
 #endif
 
         if (ancillaryMessages.size() > 0) {
-          KJ_IF_SOME(fn, ancillaryMsgCallback) {
-            fn(ancillaryMessages.asPtr());
+          KJ_IF_MAYBE(fn, ancillaryMsgCallback) {
+            (*fn)(ancillaryMessages.asPtr());
           }
         }
 
@@ -716,9 +717,8 @@ private:
 
     if (n < 0) {
       // Read would block.
-      return observer.whenBecomesReadable().then(
-          [this, buffer, minBytes, maxBytes, fdBuffer, maxFds, alreadyRead]() {
-              return tryReadInternal(buffer, minBytes, maxBytes, fdBuffer, maxFds, alreadyRead);
+      return observer.whenBecomesReadable().then([=]() {
+        return tryReadInternal(buffer, minBytes, maxBytes, fdBuffer, maxFds, alreadyRead);
       });
     } else if (n == 0) {
       // EOF -OR- maxBytes == 0.
@@ -830,7 +830,7 @@ private:
 
     if (n < 0) {
       // Got EAGAIN. Nothing was written.
-      return observer.whenBecomesWritable().then([firstPiece, morePieces, fds, this]() {
+      return observer.whenBecomesWritable().then([=]() {
         return writeInternal(firstPiece, morePieces, fds);
       });
     } else if (n == 0) {
@@ -902,20 +902,20 @@ public:
     if (addrlen < other.addrlen) return true;
     if (addrlen > other.addrlen) return false;
 
-    // addrlen == other.addrlen at this point
-    return kj::asBytes(addr).first(addrlen) < kj::asBytes(other.addr).first(addrlen);
+    return memcmp(&addr.generic, &other.addr.generic, addrlen) < 0;
   }
 
   const struct sockaddr* getRaw() const { return &addr.generic; }
   socklen_t getRawSize() const { return addrlen; }
 
-  kj::OwnFd socket(int type) const {
+  int socket(int type) const {
     bool isStream = type == SOCK_STREAM;
 
+    int result;
 #if __linux__ && !__BIONIC__
     type |= SOCK_NONBLOCK | SOCK_CLOEXEC;
 #endif
-    auto result = KJ_SYSCALL_FD(::socket(addr.generic.sa_family, type, 0));
+    KJ_SYSCALL(result = ::socket(addr.generic.sa_family, type, 0));
 
     if (isStream && (addr.generic.sa_family == AF_INET ||
                      addr.generic.sa_family == AF_INET6)) {
@@ -960,7 +960,7 @@ public:
 
     switch (addr.generic.sa_family) {
       case AF_INET: {
-        char buffer[INET6_ADDRSTRLEN]{};
+        char buffer[INET6_ADDRSTRLEN];
         if (inet_ntop(addr.inet4.sin_family, &addr.inet4.sin_addr,
                       buffer, sizeof(buffer)) == nullptr) {
           KJ_FAIL_SYSCALL("inet_ntop", errno) { break; }
@@ -969,7 +969,7 @@ public:
         return str(buffer, ':', ntohs(addr.inet4.sin_port));
       }
       case AF_INET6: {
-        char buffer[INET6_ADDRSTRLEN]{};
+        char buffer[INET6_ADDRSTRLEN];
         if (inet_ntop(addr.inet6.sin6_family, &addr.inet6.sin6_addr,
                       buffer, sizeof(buffer)) == nullptr) {
           KJ_FAIL_SYSCALL("inet_ntop", errno) { break; }
@@ -1064,12 +1064,12 @@ public:
         portPart = str.slice(closeBracket + 2);
       }
     } else {
-      KJ_IF_SOME(colon, str.findFirst(':')) {
-        if (str.slice(colon + 1).findFirst(':') == kj::none) {
+      KJ_IF_MAYBE(colon, str.findFirst(':')) {
+        if (str.slice(*colon + 1).findFirst(':') == nullptr) {
           // There is exactly one colon and no brackets, so it must be an ip4 address with port.
           af = AF_INET;
-          addrPart = str.first(colon);
-          portPart = str.slice(colon + 1);
+          addrPart = str.slice(0, *colon);
+          portPart = str.slice(*colon + 1);
         } else {
           // There are two or more colons and no brackets, so the whole thing must be an ip6
           // address with no port.
@@ -1085,12 +1085,12 @@ public:
 
     // Parse the port.
     unsigned long port;
-    KJ_IF_SOME(portText, portPart) {
+    KJ_IF_MAYBE(portText, portPart) {
       char* endptr;
-      port = strtoul(portText.cStr(), &endptr, 0);
-      if (portText.size() == 0 || *endptr != '\0') {
+      port = strtoul(portText->cStr(), &endptr, 0);
+      if (portText->size() == 0 || *endptr != '\0') {
         // Not a number.  Maybe it's a service name.  Fall back to DNS.
-        return lookupHost(lowLevel, kj::heapString(addrPart), kj::heapString(portText), portHint,
+        return lookupHost(lowLevel, kj::heapString(addrPart), kj::heapString(*portText), portHint,
                           filter);
       }
       KJ_REQUIRE(port < 65536, "Port number too large.");
@@ -1134,7 +1134,7 @@ public:
 
     if (addrPart.size() < INET6_ADDRSTRLEN - 1) {
       // addrPart is not necessarily NUL-terminated so we have to make a copy.  :(
-      char buffer[INET6_ADDRSTRLEN]{};
+      char buffer[INET6_ADDRSTRLEN];
       memcpy(buffer, addrPart.begin(), addrPart.size());
       buffer[addrPart.size()] = '\0';
 
@@ -1232,11 +1232,11 @@ Promise<Array<SocketAddress>> SocketAddress::lookupHost(
     // So we instead resort to de-duping results.
     std::set<SocketAddress> result;
 
-    KJ_IF_SOME(exception, kj::runCatchingExceptions([&]() {
+    KJ_IF_MAYBE(exception, kj::runCatchingExceptions([&]() {
       struct addrinfo hints;
       memset(&hints, 0, sizeof(hints));
       hints.ai_family = AF_UNSPEC;
-#if __BIONIC__ || !defined(AI_V4MAPPED)
+#if __BIONIC__
       // AI_V4MAPPED causes getaddrinfo() to fail on Bionic libc (Android).
       hints.ai_flags = AI_ADDRCONFIG;
 #else
@@ -1300,7 +1300,7 @@ Promise<Array<SocketAddress>> SocketAddress::lookupHost(
         }
       }
     })) {
-      fulfiller->reject(kj::mv(exception));
+      fulfiller->reject(kj::mv(*exception));
     } else {
       fulfiller->fulfill(KJ_MAP(addr, result) { return addr; });
     }
@@ -1342,7 +1342,7 @@ public:
 #endif
 
     if (newFd >= 0) {
-      kj::OwnFd ownFd(newFd);
+      kj::AutoCloseFd ownFd(newFd);
       if (!filter.shouldAllow(reinterpret_cast<struct sockaddr*>(&addr), addrlen)) {
         // Ignore disallowed address.
         return acceptImpl(authenticated);
@@ -1444,7 +1444,7 @@ public:
         observer(eventPort, fd, UnixEventPort::FdObserver::OBSERVE_READ |
                                 UnixEventPort::FdObserver::OBSERVE_WRITE) {}
 
-  Promise<size_t> send(ArrayPtr<const byte> buffer, NetworkAddress& destination) override;
+  Promise<size_t> send(const void* buffer, size_t size, NetworkAddress& destination) override;
   Promise<size_t> send(
       ArrayPtr<const ArrayPtr<const byte>> pieces, NetworkAddress& destination) override;
 
@@ -1474,8 +1474,10 @@ public:
 
 class LowLevelAsyncIoProviderImpl final: public LowLevelAsyncIoProvider {
 public:
-  LowLevelAsyncIoProviderImpl(UnixEventPort& eventPort)
-      : eventPort(eventPort) {}
+  LowLevelAsyncIoProviderImpl()
+      : eventPort(), eventLoop(eventPort), waitScope(eventLoop) {}
+
+  inline WaitScope& getWaitScope() { return waitScope; }
 
   Own<AsyncInputStream> wrapInputFd(int fd, uint flags = 0) override {
     return heap<AsyncStreamFd>(eventPort, fd, flags, UnixEventPort::FdObserver::OBSERVE_READ);
@@ -1537,8 +1539,12 @@ public:
 
   Timer& getTimer() override { return eventPort.getTimer(); }
 
+  UnixEventPort& getEventPort() { return eventPort; }
+
 private:
-  UnixEventPort& eventPort;
+  UnixEventPort eventPort;
+  EventLoop eventLoop;
+  WaitScope waitScope;
 };
 
 // =======================================================================================
@@ -1565,9 +1571,11 @@ public:
 
   Own<ConnectionReceiver> listen() override {
     auto makeReceiver = [&](SocketAddress& addr) {
-      auto fd = addr.socket(SOCK_STREAM);
+      int fd = addr.socket(SOCK_STREAM);
 
       {
+        KJ_ON_SCOPE_FAILURE(close(fd));
+
         // We always enable SO_REUSEADDR because having to take your server down for five minutes
         // before it can restart really sucks.
         int optval = 1;
@@ -1579,7 +1587,7 @@ public:
         KJ_SYSCALL(::listen(fd, SOMAXCONN));
       }
 
-      return lowLevel.wrapListenSocketFd(kj::mv(fd), filter, NEW_FD_FLAGS);
+      return lowLevel.wrapListenSocketFd(fd, filter, NEW_FD_FLAGS);
     };
 
     if (addrs.size() == 1) {
@@ -1596,9 +1604,11 @@ public:
           "in the future.", addrs[0].toString());
     }
 
-    auto fd = addrs[0].socket(SOCK_DGRAM);
+    int fd = addrs[0].socket(SOCK_DGRAM);
 
     {
+      KJ_ON_SCOPE_FAILURE(close(fd));
+
       // We always enable SO_REUSEADDR because having to take your server down for five minutes
       // before it can restart really sucks.
       int optval = 1;
@@ -1607,7 +1617,7 @@ public:
       addrs[0].bind(fd);
     }
 
-    return lowLevel.wrapDatagramSocketFd(kj::mv(fd), filter, NEW_FD_FLAGS);
+    return lowLevel.wrapDatagramSocketFd(fd, filter, NEW_FD_FLAGS);
   }
 
   Own<NetworkAddress> clone() override {
@@ -1640,9 +1650,9 @@ private:
       if (!addrs[0].allowedBy(filter)) {
         return KJ_EXCEPTION(FAILED, "connect() blocked by restrictPeers()");
       } else {
-        auto fd = addrs[0].socket(SOCK_STREAM);
+        int fd = addrs[0].socket(SOCK_STREAM);
         return lowLevel.wrapConnectingSocketFd(
-            kj::mv(fd), addrs[0].getRaw(), addrs[0].getRawSize(), NEW_FD_FLAGS);
+            fd, addrs[0].getRaw(), addrs[0].getRawSize(), NEW_FD_FLAGS);
       }
     }).then([&lowLevel,&filter,addrs,authenticated](Own<AsyncIoStream>&& stream)
         -> Promise<AuthenticatedStream> {
@@ -1764,15 +1774,15 @@ private:
 // =======================================================================================
 
 Promise<size_t> DatagramPortImpl::send(
-    ArrayPtr<const byte> buffer, NetworkAddress& destination) {
+    const void* buffer, size_t size, NetworkAddress& destination) {
   auto& addr = downcast<NetworkAddressImpl>(destination).chooseOneAddress();
 
   ssize_t n;
-  KJ_NONBLOCKING_SYSCALL(n = sendto(fd, buffer.begin(), buffer.size(), 0, addr.getRaw(), addr.getRawSize()));
+  KJ_NONBLOCKING_SYSCALL(n = sendto(fd, buffer, size, 0, addr.getRaw(), addr.getRawSize()));
   if (n < 0) {
     // Write buffer full.
-    return observer.whenBecomesWritable().then([this, buffer, &destination]() {
-      return send(buffer, destination);
+    return observer.whenBecomesWritable().then([this, buffer, size, &destination]() {
+      return send(buffer, size, destination);
     });
   } else {
     // If less than the whole message was sent, then it got truncated, and there's nothing we can
@@ -1919,7 +1929,7 @@ public:
   }
 
   MaybeTruncated<ArrayPtr<const byte>> getContent() override {
-    return { contentBuffer.first(receivedSize), contentTruncated };
+    return { contentBuffer.slice(0, receivedSize), contentTruncated };
   }
 
   MaybeTruncated<ArrayPtr<const AncillaryMessage>> getAncillary() override {
@@ -1964,7 +1974,7 @@ public:
       : lowLevel(lowLevel), network(lowLevel) {}
 
   OneWayPipe newOneWayPipe() override {
-    int fds[2]{};
+    int fds[2];
 #if __linux__ && !__BIONIC__
     KJ_SYSCALL(pipe2(fds, O_NONBLOCK | O_CLOEXEC));
 #else
@@ -1977,7 +1987,7 @@ public:
   }
 
   TwoWayPipe newTwoWayPipe() override {
-    int fds[2]{};
+    int fds[2];
     int type = SOCK_STREAM;
 #if __linux__ && !__BIONIC__
     type |= SOCK_NONBLOCK | SOCK_CLOEXEC;
@@ -1990,7 +2000,7 @@ public:
   }
 
   CapabilityPipe newCapabilityPipe() override {
-    int fds[2]{};
+    int fds[2];
     int type = SOCK_STREAM;
 #if __linux__ && !__BIONIC__
     type |= SOCK_NONBLOCK | SOCK_CLOEXEC;
@@ -2008,7 +2018,7 @@ public:
 
   PipeThread newPipeThread(
       Function<void(AsyncIoProvider&, AsyncIoStream&, WaitScope&)> startFunc) override {
-    int fds[2]{};
+    int fds[2];
     int type = SOCK_STREAM;
 #if __linux__ && !__BIONIC__
     type |= SOCK_NONBLOCK | SOCK_CLOEXEC;
@@ -2021,13 +2031,10 @@ public:
     auto pipe = lowLevel.wrapSocketFd(fds[0], NEW_FD_FLAGS);
 
     auto thread = heap<Thread>([threadFd,startFunc=kj::mv(startFunc)]() mutable {
-      UnixEventPort eventPort;
-      EventLoop eventLoop(eventPort);
-      WaitScope waitScope(eventLoop);
-      LowLevelAsyncIoProviderImpl lowLevel(eventPort);
+      LowLevelAsyncIoProviderImpl lowLevel;
       auto stream = lowLevel.wrapSocketFd(threadFd, NEW_FD_FLAGS);
       AsyncIoProviderImpl ioProvider(lowLevel);
-      startFunc(ioProvider, *stream, waitScope);
+      startFunc(ioProvider, *stream, lowLevel.getWaitScope());
     });
 
     return { kj::mv(thread), kj::mv(pipe) };
@@ -2046,32 +2053,11 @@ Own<AsyncIoProvider> newAsyncIoProvider(LowLevelAsyncIoProvider& lowLevel) {
   return kj::heap<AsyncIoProviderImpl>(lowLevel);
 }
 
-Own<LowLevelAsyncIoProvider> newLowLevelAsyncIoProvider(UnixEventPort& eventPort) {
-  return kj::heap<LowLevelAsyncIoProviderImpl>(eventPort);
-}
-
 AsyncIoContext setupAsyncIo() {
-  struct BasicContext {
-    UnixEventPort eventPort;
-    EventLoop eventLoop;
-    WaitScope waitScope;
-
-    BasicContext(): eventLoop(eventPort), waitScope(eventLoop) {}
-  };
-
-  auto basicContext = heap<BasicContext>();
-  auto lowLevel = heap<LowLevelAsyncIoProviderImpl>(basicContext->eventPort);
+  auto lowLevel = heap<LowLevelAsyncIoProviderImpl>();
   auto ioProvider = kj::heap<AsyncIoProviderImpl>(*lowLevel);
-  auto& waitScope = basicContext->waitScope;
-  auto& eventPort = basicContext->eventPort;
-
-  // Historically, `LowLevelAsyncIoProviderImpl` contained the stuff that `BasicContext` now
-  // contains. However, this made it impossible to create more elaborate EventLoop arrangements
-  // while still using the default LLAIOP implementation. For backwards-compatibility,
-  // `setupAsyncIo()` still attaches this context to the LLAIOP, but it's now possible to construct
-  // these objects directly and LLAIOP on top.
-  lowLevel = lowLevel.attach(kj::mv(basicContext));
-
+  auto& waitScope = lowLevel->getWaitScope();
+  auto& eventPort = lowLevel->getEventPort();
   return { kj::mv(lowLevel), kj::mv(ioProvider), waitScope, eventPort };
 }
 

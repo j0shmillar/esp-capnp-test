@@ -58,22 +58,26 @@ public:
   kj::Maybe<ClientHook&> getResolved() override {
     // We can't let people resolve to the underlying capability because then we wouldn't be able
     // to redirect them later.
-    return kj::none;
+    return nullptr;
   }
 
   kj::Maybe<kj::Promise<kj::Own<ClientHook>>> whenMoreResolved() override {
-    return kj::none;
+    return nullptr;
   }
 
   kj::Own<ClientHook> addRef() override {
     return kj::addRef(*this);
   }
 
+  const void* getBrand() override {
+    return nullptr;
+  }
+
   kj::Maybe<int> getFd() override {
     // It's not safe to return current->getFd() because normally callers wouldn't expect the FD to
     // change or go away over time, but this one could whenever we reconnect. If there's a use
     // case for being able to access the FD here, we'll need a different interface to do it.
-    return kj::none;
+    return nullptr;
   }
 
 private:
@@ -89,10 +93,10 @@ private:
       if (exception.getType() == kj::Exception::Type::DISCONNECTED &&
           self->generation == startGeneration) {
         self->generation++;
-        KJ_IF_SOME(e2, kj::runCatchingExceptions([&]() {
+        KJ_IF_MAYBE(e2, kj::runCatchingExceptions([&]() {
           self->current = ClientHook::from(self->connect());
         })) {
-          self->current = newBrokenCap(kj::mv(e2));
+          self->current = newBrokenCap(kj::mv(*e2));
         }
       }
       return kj::mv(exception);
@@ -100,8 +104,8 @@ private:
   }
 
   ClientHook& getCurrent() {
-    KJ_IF_SOME(c, current) {
-      return *c;
+    KJ_IF_MAYBE(c, current) {
+      return **c;
     } else {
       return *current.emplace(ClientHook::from(connect()));
     }
@@ -133,6 +137,10 @@ private:
     AnyPointer::Pipeline sendForPipeline() override {
       // TODO(bug): This definitely fails to detect disconnects; see comment in send().
       return inner->sendForPipeline();
+    }
+
+    const void* getBrand() override {
+      return nullptr;
     }
 
   private:

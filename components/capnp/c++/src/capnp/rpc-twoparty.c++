@@ -107,7 +107,7 @@ kj::Own<TwoPartyVatNetworkBase::Connection> TwoPartyVatNetwork::asConnection() {
 kj::Maybe<kj::Own<TwoPartyVatNetworkBase::Connection>> TwoPartyVatNetwork::connect(
     rpc::twoparty::VatId::Reader ref) {
   if (ref.getSide() == side) {
-    return kj::none;
+    return nullptr;
   } else {
     return asConnection();
   }
@@ -143,8 +143,6 @@ public:
   }
 
   void send() override {
-    KJ_REQUIRE(!network.idle, "bug in RpcSystem: trying to send a message while idle");
-
     size_t size = 0;
     for (auto& segment: message.getSegmentsForOutput()) {
       size += segment.size();
@@ -181,8 +179,8 @@ public:
     }
 
     // On the other hand, if pendingMessages was empty, then we should set up the delayed write.
-    network.previousWrite = previousWrite.then([&network = network, sendTime]() {
-      return kj::evalLast([&network, sendTime]() -> kj::Promise<void> {
+    network.previousWrite = previousWrite.then([this, sendTime]() {
+      return kj::evalLast([this, sendTime]() -> kj::Promise<void> {
         network.currentOutgoingMessageSendTime = sendTime;
         // Swap out the connection's pending messages and write all of them together.
         auto ownMessages = kj::mv(network.queuedMessages);
@@ -194,7 +192,7 @@ public:
           messages[i].fds = ownMessages[i]->fds;
         }
         return network.getStream().writeMessages(messages).attach(kj::mv(ownMessages), kj::mv(messages));
-      }).catch_([&network](kj::Exception&& e) {
+      }).catch_([this](kj::Exception&& e) {
         // Since no one checks write failures, we need to propagate them into read failures,
         // otherwise we might get stuck sending all messages into a black hole and wondering why
         // the peer never replies.
@@ -204,7 +202,11 @@ public:
         }
         kj::throwRecoverableException(kj::mv(e));
       });
-    }).eagerlyEvaluate(nullptr);
+    }).attach(kj::addRef(*this))
+      // Note that it's important that the eagerlyEvaluate() come *after* the attach() because
+      // otherwise the message (and any capabilities in it) will not be released until a new
+      // message is written! (Kenton once spent all afternoon tracking this down...)
+      .eagerlyEvaluate(nullptr);
   }
 
   size_t sizeInWords() override {
@@ -229,7 +231,7 @@ class TwoPartyVatNetwork::IncomingMessageImpl final: public IncomingRpcMessage {
 public:
   IncomingMessageImpl(kj::Own<MessageReader> message): message(kj::mv(message)) {}
 
-  IncomingMessageImpl(MessageReaderAndFds init, kj::Array<kj::OwnFd> fdSpace)
+  IncomingMessageImpl(MessageReaderAndFds init, kj::Array<kj::AutoCloseFd> fdSpace)
       : message(kj::mv(init.reader)),
         fdSpace(kj::mv(fdSpace)),
         fds(init.fds) {
@@ -240,7 +242,7 @@ public:
     return message->getRoot<AnyPointer>();
   }
 
-  kj::ArrayPtr<kj::OwnFd> getAttachedFds() override {
+  kj::ArrayPtr<kj::AutoCloseFd> getAttachedFds() override {
     return fds;
   }
 
@@ -250,8 +252,8 @@ public:
 
 private:
   kj::Own<MessageReader> message;
-  kj::Array<kj::OwnFd> fdSpace;
-  kj::ArrayPtr<kj::OwnFd> fds;
+  kj::Array<kj::AutoCloseFd> fdSpace;
+  kj::ArrayPtr<kj::AutoCloseFd> fds;
 };
 
 kj::Own<RpcFlowController> TwoPartyVatNetwork::newStream() {
@@ -283,8 +285,8 @@ size_t TwoPartyVatNetwork::getWindow() {
   if (solSndbufUnimplemented) {
     return RpcFlowController::DEFAULT_WINDOW_SIZE;
   } else {
-    KJ_IF_SOME(bufSize, getStream().getSendBufferSize()) {
-      return bufSize;
+    KJ_IF_MAYBE(bufSize, getStream().getSendBufferSize()) {
+      return *bufSize;
     } else {
       solSndbufUnimplemented = true;
       return RpcFlowController::DEFAULT_WINDOW_SIZE;
@@ -297,34 +299,33 @@ rpc::twoparty::VatId::Reader TwoPartyVatNetwork::getPeerVatId() {
 }
 
 kj::Own<OutgoingRpcMessage> TwoPartyVatNetwork::newOutgoingMessage(uint firstSegmentWordSize) {
-  KJ_REQUIRE(!idle, "bug in RpcSystem: trying to send a message while idle");
   return kj::refcounted<OutgoingMessageImpl>(*this, firstSegmentWordSize);
 }
 
 kj::Promise<kj::Maybe<kj::Own<IncomingRpcMessage>>> TwoPartyVatNetwork::receiveIncomingMessage() {
   return kj::evalLater([this]() -> kj::Promise<kj::Maybe<kj::Own<IncomingRpcMessage>>> {
-    KJ_IF_SOME(e, readCancelReason) {
+    KJ_IF_MAYBE(e, readCancelReason) {
       // A previous write failed; propagate the failure to reads, too.
-      return kj::cp(e);
+      return kj::cp(*e);
     }
 
-    kj::Array<kj::OwnFd> fdSpace = nullptr;
+    kj::Array<kj::AutoCloseFd> fdSpace = nullptr;
     if(maxFdsPerMessage > 0) {
-      fdSpace = kj::heapArray<kj::OwnFd>(maxFdsPerMessage);
+      fdSpace = kj::heapArray<kj::AutoCloseFd>(maxFdsPerMessage);
     }
     auto promise = readCanceler.wrap(getStream().tryReadMessage(fdSpace, receiveOptions));
     return promise.then([fdSpace = kj::mv(fdSpace)]
                         (kj::Maybe<MessageReaderAndFds>&& messageAndFds) mutable
                       -> kj::Maybe<kj::Own<IncomingRpcMessage>> {
-      KJ_IF_SOME(m, messageAndFds) {
-        if (m.fds.size() > 0) {
+      KJ_IF_MAYBE(m, messageAndFds) {
+        if (m->fds.size() > 0) {
           return kj::Own<IncomingRpcMessage>(
-              kj::heap<IncomingMessageImpl>(kj::mv(m), kj::mv(fdSpace)));
+              kj::heap<IncomingMessageImpl>(kj::mv(*m), kj::mv(fdSpace)));
         } else {
-          return kj::Own<IncomingRpcMessage>(kj::heap<IncomingMessageImpl>(kj::mv(m.reader)));
+          return kj::Own<IncomingRpcMessage>(kj::heap<IncomingMessageImpl>(kj::mv(m->reader)));
         }
       } else {
-        return kj::none;
+        return nullptr;
       }
     });
   });
@@ -334,15 +335,8 @@ kj::Promise<void> TwoPartyVatNetwork::shutdown() {
   kj::Promise<void> result = KJ_ASSERT_NONNULL(previousWrite, "already shut down").then([this]() {
     return getStream().end();
   });
-  previousWrite = kj::none;
+  previousWrite = nullptr;
   return kj::mv(result);
-}
-
-void TwoPartyVatNetwork::setIdle(bool idle) {
-  // TwoPartyVatNetwork doesn't care about idleness, but tracks it just for the sake of catching
-  // bugs in the RPC system itself.
-  KJ_REQUIRE(idle != this->idle);
-  this->idle = idle;
 }
 
 // =======================================================================================
@@ -377,8 +371,8 @@ struct TwoPartyServer::AcceptedConnection {
   }
 
   void init(TwoPartyServer& parent) {
-    KJ_IF_SOME(func, parent.traceEncoder) {
-      rpcSystem.setTraceEncoder([&func](const kj::Exception& e) {
+    KJ_IF_MAYBE(t, parent.traceEncoder) {
+      rpcSystem.setTraceEncoder([&func = *t](const kj::Exception& e) {
         return func(e);
       });
     }

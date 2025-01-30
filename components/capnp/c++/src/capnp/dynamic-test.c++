@@ -263,7 +263,7 @@ TEST(DynamicApi, DynamicAnyStructs) {
 }
 
 #define EXPECT_MAYBE_EQ(name, exp, expected, actual) \
-  KJ_IF_SOME(name, exp) { \
+  KJ_IF_MAYBE(name, exp) { \
     EXPECT_EQ(expected, actual); \
   } else { \
     KJ_FAIL_EXPECT("Maybe was empty."); \
@@ -282,22 +282,22 @@ TEST(DynamicApi, UnionsRead) {
     auto dynamic = toDynamic(root.asReader());
     {
       auto u = dynamic.get("union0").as<DynamicStruct>();
-      EXPECT_MAYBE_EQ(w, u.which(), "u0f1s32", w.getProto().getName());
+      EXPECT_MAYBE_EQ(w, u.which(), "u0f1s32", w->getProto().getName());
       EXPECT_EQ(1234567, u.get("u0f1s32").as<int32_t>());
     }
     {
       auto u = dynamic.get("union1").as<DynamicStruct>();
-      EXPECT_MAYBE_EQ(w, u.which(), "u1f1sp", w.getProto().getName());
+      EXPECT_MAYBE_EQ(w, u.which(), "u1f1sp", w->getProto().getName());
       EXPECT_EQ("foo", u.get("u1f1sp").as<Text>());
     }
     {
       auto u = dynamic.get("union2").as<DynamicStruct>();
-      EXPECT_MAYBE_EQ(w, u.which(), "u2f0s1", w.getProto().getName());
+      EXPECT_MAYBE_EQ(w, u.which(), "u2f0s1", w->getProto().getName());
       EXPECT_TRUE(u.get("u2f0s1").as<bool>());
     }
     {
       auto u = dynamic.get("union3").as<DynamicStruct>();
-      EXPECT_MAYBE_EQ(w, u.which(), "u3f0s64", w.getProto().getName());
+      EXPECT_MAYBE_EQ(w, u.which(), "u3f0s64", w->getProto().getName());
       EXPECT_EQ(1234567890123456789ll, u.get("u3f0s64").as<int64_t>());
     }
   }
@@ -307,22 +307,22 @@ TEST(DynamicApi, UnionsRead) {
     auto dynamic = toDynamic(root);
     {
       auto u = dynamic.get("union0").as<DynamicStruct>();
-      EXPECT_MAYBE_EQ(w, u.which(), "u0f1s32", w.getProto().getName());
+      EXPECT_MAYBE_EQ(w, u.which(), "u0f1s32", w->getProto().getName());
       EXPECT_EQ(1234567, u.get("u0f1s32").as<int32_t>());
     }
     {
       auto u = dynamic.get("union1").as<DynamicStruct>();
-      EXPECT_MAYBE_EQ(w, u.which(), "u1f1sp", w.getProto().getName());
+      EXPECT_MAYBE_EQ(w, u.which(), "u1f1sp", w->getProto().getName());
       EXPECT_EQ("foo", u.get("u1f1sp").as<Text>());
     }
     {
       auto u = dynamic.get("union2").as<DynamicStruct>();
-      EXPECT_MAYBE_EQ(w, u.which(), "u2f0s1", w.getProto().getName());
+      EXPECT_MAYBE_EQ(w, u.which(), "u2f0s1", w->getProto().getName());
       EXPECT_TRUE(u.get("u2f0s1").as<bool>());
     }
     {
       auto u = dynamic.get("union3").as<DynamicStruct>();
-      EXPECT_MAYBE_EQ(w, u.which(), "u3f0s64", w.getProto().getName());
+      EXPECT_MAYBE_EQ(w, u.which(), "u3f0s64", w->getProto().getName());
       EXPECT_EQ(1234567890123456789ll, u.get("u3f0s64").as<int64_t>());
     }
   }
@@ -490,25 +490,6 @@ TEST(DynamicApi, BuilderAssign) {
   value = root.init("int32List", 1);
   listValue = value.as<DynamicList>();
   listValue.set(0, 123);
-}
-
-TEST(DynamicApi, SetGroup) {
-  MallocMessageBuilder srcBuilder;
-  MallocMessageBuilder dstBuilder;
-
-  auto srcRoot = srcBuilder.initRoot<TestInterleavedGroups>();
-  auto srcGroup = srcRoot.initGroup1();
-  srcGroup.setFoo(10);
-  srcGroup.initCorge().setPlugh("howdy");
-
-  auto dstRoot = dstBuilder.initRoot<DynamicStruct>(Schema::from<TestInterleavedGroups>());
-  dstRoot.set("group1", srcGroup.asReader());
-
-  auto dstGroup = dstRoot.get("group1").as<DynamicStruct>();
-
-  EXPECT_EQ(10u, dstGroup.get("foo").as<uint32_t>());
-  EXPECT_ANY_THROW(dstGroup.get("qux"));
-  EXPECT_EQ("howdy", dstGroup.get("corge").as<DynamicStruct>().get("plugh").as<Text>());
 }
 
 }  // namespace

@@ -22,12 +22,12 @@
 #pragma once
 
 #include <capnp/test.capnp.h>
-#include <initializer_list>
-#include <capnp/blob.h>
+#include <iostream>
+#include "blob.h"
 #include <kj/compat/gtest.h>
 
 #if !CAPNP_LITE
-#include <capnp/dynamic.h>
+#include "dynamic.h"
 #include <kj/io.h>
 #endif  // !CAPNP_LITE
 
@@ -81,7 +81,6 @@ using ::capnproto_test::capnp::test::TestUnionDefaults;
 using ::capnproto_test::capnp::test::TestNestedTypes;
 using ::capnproto_test::capnp::test::TestUsing;
 using ::capnproto_test::capnp::test::TestListDefaults;
-using ::capnproto_test::capnp::test::TestInterleavedGroups;
 
 void initTestMessage(TestAllTypes::Builder builder);
 void initTestMessage(TestDefaults::Builder builder);
@@ -185,20 +184,14 @@ void checkList(T reader, std::initializer_list<ReaderFor<Element>> expected) {
 
 class TestInterfaceImpl final: public test::TestInterface::Server {
 public:
-  TestInterfaceImpl(int& callCount, kj::Maybe<int&> handleCount = kj::none);
+  TestInterfaceImpl(int& callCount);
 
   kj::Promise<void> foo(FooContext context) override;
 
   kj::Promise<void> baz(BazContext context) override;
 
-  kj::Promise<void> getTestPipeline(GetTestPipelineContext context) override;
-  kj::Promise<void> getTestTailCallee(GetTestTailCalleeContext context) override;
-  kj::Promise<void> getTestTailCaller(GetTestTailCallerContext context) override;
-  kj::Promise<void> getTestMoreStuff(GetTestMoreStuffContext context) override;
-
 private:
   int& callCount;
-  kj::Maybe<int&> handleCount;
 };
 
 class TestExtendsImpl final: public test::TestExtends2::Server {
@@ -289,8 +282,6 @@ public:
 
   kj::Promise<void> throwRemoteException(ThrowRemoteExceptionContext context) override;
 
-  kj::Promise<void> throwExceptionWithDetail(ThrowExceptionWithDetailContext context) override;
-
 private:
   int& callCount;
   int& handleCount;
@@ -310,7 +301,7 @@ public:
     fulfiller->fulfill();
   }
 
-  kj::Promise<void> foo(FooContext context) override {
+  kj::Promise<void> foo(FooContext context) {
     return impl.foo(context);
   }
 
@@ -324,12 +315,12 @@ class TestFdCap final: public test::TestInterface::Server {
   // Implementation of TestInterface that wraps a file descriptor.
 
 public:
-  TestFdCap(kj::OwnFd fd): fd(kj::mv(fd)) {}
+  TestFdCap(kj::AutoCloseFd fd): fd(kj::mv(fd)) {}
 
   kj::Maybe<int> getFd() override { return fd.get(); }
 
 private:
-  kj::OwnFd fd;
+  kj::AutoCloseFd fd;
 };
 
 class TestStreamingImpl final: public test::TestStreaming::Server {

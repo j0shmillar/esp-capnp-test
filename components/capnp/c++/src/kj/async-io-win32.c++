@@ -242,10 +242,10 @@ public:
     return tryReadInternal(ref, minBytes, 0).attach(kj::mv(bufs));
   }
 
-  Promise<void> write(kj::ArrayPtr<const byte> buffer) override {
+  Promise<void> write(const void* buffer, size_t size) override {
     auto bufs = heapArray<WSABUF>(1);
-    bufs[0].buf = const_cast<char*>(buffer.asChars().begin());
-    bufs[0].len = buffer.size();
+    bufs[0].buf = const_cast<char*>(reinterpret_cast<const char*>(buffer));
+    bufs[0].len = size;
 
     ArrayPtr<WSABUF> ref = bufs;
     return writeInternal(ref).attach(kj::mv(bufs));
@@ -350,10 +350,6 @@ public:
     socklen_t socklen = *length;
     KJ_WINSOCK(::getpeername(fd, addr, &socklen));
     *length = socklen;
-  }
-
-  Maybe<void*> getWin32Handle() const override {
-    return reinterpret_cast<void*>(fd);
   }
 
 private:
@@ -474,8 +470,7 @@ public:
     if (addrlen < other.addrlen) return true;
     if (addrlen > other.addrlen) return false;
 
-    // addrlen == other.addrlen at this point
-    return kj::asBytes(addr).first(addrlen) < kj::asBytes(other.addr).first(addrlen);
+    return memcmp(&addr.generic, &other.addr.generic, addrlen) < 0;
   }
 
   const struct sockaddr* getRaw() const { return &addr.generic; }
@@ -585,12 +580,12 @@ public:
         portPart = str.slice(closeBracket + 2);
       }
     } else {
-      KJ_IF_SOME(colon, str.findFirst(':')) {
-        if (str.slice(colon + 1).findFirst(':') == kj::none) {
+      KJ_IF_MAYBE(colon, str.findFirst(':')) {
+        if (str.slice(*colon + 1).findFirst(':') == nullptr) {
           // There is exactly one colon and no brackets, so it must be an ip4 address with port.
           af = AF_INET;
-          addrPart = str.first(colon);
-          portPart = str.slice(colon + 1);
+          addrPart = str.slice(0, *colon);
+          portPart = str.slice(*colon + 1);
         } else {
           // There are two or more colons and no brackets, so the whole thing must be an ip6
           // address with no port.
@@ -606,12 +601,12 @@ public:
 
     // Parse the port.
     unsigned long port;
-    KJ_IF_SOME(portText, portPart) {
+    KJ_IF_MAYBE(portText, portPart) {
       char* endptr;
-      port = strtoul(portText.cStr(), &endptr, 0);
-      if (portText.size() == 0 || *endptr != '\0') {
+      port = strtoul(portText->cStr(), &endptr, 0);
+      if (portText->size() == 0 || *endptr != '\0') {
         // Not a number.  Maybe it's a service name.  Fall back to DNS.
-        return lookupHost(lowLevel, kj::heapString(addrPart), kj::heapString(portText), portHint,
+        return lookupHost(lowLevel, kj::heapString(addrPart), kj::heapString(*portText), portHint,
                           filter);
       }
       KJ_REQUIRE(port < 65536, "Port number too large.");
@@ -765,7 +760,7 @@ Promise<Array<SocketAddress>> SocketAddress::lookupHost(
     // So we instead resort to de-duping results.
     std::set<SocketAddress> result;
 
-    KJ_IF_SOME(exception, kj::runCatchingExceptions([&]() {
+    KJ_IF_MAYBE(exception, kj::runCatchingExceptions([&]() {
       addrinfo* list;
       int status = getaddrinfo(
           params.host == "*" ? nullptr : params.host.cStr(),
@@ -820,7 +815,7 @@ Promise<Array<SocketAddress>> SocketAddress::lookupHost(
         }
       }
     })) {
-      fulfiller->reject(kj::mv(exception));
+      fulfiller->reject(kj::mv(*exception));
     } else {
       fulfiller->fulfill(KJ_MAP(addr, result) { return addr; });
     }
@@ -924,7 +919,10 @@ public:
 
 class LowLevelAsyncIoProviderImpl final: public LowLevelAsyncIoProvider {
 public:
-  LowLevelAsyncIoProviderImpl(Win32EventPort& eventPort): eventPort(eventPort) {}
+  LowLevelAsyncIoProviderImpl()
+      : eventLoop(eventPort), waitScope(eventLoop) {}
+
+  inline WaitScope& getWaitScope() { return waitScope; }
 
   Own<AsyncInputStream> wrapInputFd(SOCKET fd, uint flags = 0) override {
     return heap<AsyncStreamFd>(eventPort, fd, flags);
@@ -954,8 +952,12 @@ public:
 
   Timer& getTimer() override { return eventPort.getTimer(); }
 
+  Win32EventPort& getEventPort() { return eventPort; }
+
 private:
-  Win32EventPort& eventPort;
+  Win32IocpEventPort eventPort;
+  EventLoop eventLoop;
+  WaitScope waitScope;
 };
 
 // =======================================================================================
@@ -974,32 +976,30 @@ public:
   }
 
   Own<ConnectionReceiver> listen() override {
-    auto makeReceiver = [&](SocketAddress& addr) {
-      int fd = addr.socket(SOCK_STREAM);
-
-      {
-        KJ_ON_SCOPE_FAILURE(closesocket(fd));
-
-        // We always enable SO_REUSEADDR because having to take your server down for five minutes
-        // before it can restart really sucks.
-        int optval = 1;
-        KJ_WINSOCK(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR,
-                              reinterpret_cast<char*>(&optval), sizeof(optval)));
-
-        addr.bind(fd);
-
-        // TODO(someday):  Let queue size be specified explicitly in string addresses.
-        KJ_WINSOCK(::listen(fd, SOMAXCONN));
-      }
-
-      return lowLevel.wrapListenSocketFd(fd, filter, NEW_FD_FLAGS);
-    };
-
-    if (addrs.size() == 1) {
-      return makeReceiver(addrs[0]);
-    } else {
-      return newAggregateConnectionReceiver(KJ_MAP(addr, addrs) { return makeReceiver(addr); });
+    if (addrs.size() > 1) {
+      KJ_LOG(WARNING, "Bind address resolved to multiple addresses.  Only the first address will "
+          "be used.  If this is incorrect, specify the address numerically.  This may be fixed "
+          "in the future.", addrs[0].toString());
     }
+
+    int fd = addrs[0].socket(SOCK_STREAM);
+
+    {
+      KJ_ON_SCOPE_FAILURE(closesocket(fd));
+
+      // We always enable SO_REUSEADDR because having to take your server down for five minutes
+      // before it can restart really sucks.
+      int optval = 1;
+      KJ_WINSOCK(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR,
+                            reinterpret_cast<char*>(&optval), sizeof(optval)));
+
+      addrs[0].bind(fd);
+
+      // TODO(someday):  Let queue size be specified explicitly in string addresses.
+      KJ_WINSOCK(::listen(fd, SOMAXCONN));
+    }
+
+    return lowLevel.wrapListenSocketFd(fd, filter, NEW_FD_FLAGS);
   }
 
   Own<DatagramPort> bindDatagramPort() override {
@@ -1151,13 +1151,10 @@ public:
     auto pipe = lowLevel.wrapSocketFd(fds[0], NEW_FD_FLAGS);
 
     auto thread = heap<Thread>([threadFd,startFunc=kj::mv(startFunc)]() mutable {
-      Win32IocpEventPort eventPort;
-      EventLoop eventLoop(eventPort);
-      WaitScope waitScope(eventLoop);
-      LowLevelAsyncIoProviderImpl lowLevel(eventPort);
+      LowLevelAsyncIoProviderImpl lowLevel;
       auto stream = lowLevel.wrapSocketFd(threadFd, NEW_FD_FLAGS);
       AsyncIoProviderImpl ioProvider(lowLevel);
-      startFunc(ioProvider, *stream, waitScope);
+      startFunc(ioProvider, *stream, lowLevel.getWaitScope());
     });
 
     return { kj::mv(thread), kj::mv(pipe) };
@@ -1176,34 +1173,13 @@ Own<AsyncIoProvider> newAsyncIoProvider(LowLevelAsyncIoProvider& lowLevel) {
   return kj::heap<AsyncIoProviderImpl>(lowLevel);
 }
 
-Own<LowLevelAsyncIoProvider> newLowLevelAsyncIoProvider(Win32EventPort& eventPort) {
-  return kj::heap<LowLevelAsyncIoProviderImpl>(eventPort);
-}
-
 AsyncIoContext setupAsyncIo() {
   _::initWinsockOnce();
 
-  struct BasicContext {
-    Win32IocpEventPort eventPort;
-    EventLoop eventLoop;
-    WaitScope waitScope;
-
-    BasicContext(): eventLoop(eventPort), waitScope(eventLoop) {}
-  };
-
-  auto basicContext = heap<BasicContext>();
-  auto lowLevel = heap<LowLevelAsyncIoProviderImpl>(basicContext->eventPort);
+  auto lowLevel = heap<LowLevelAsyncIoProviderImpl>();
   auto ioProvider = kj::heap<AsyncIoProviderImpl>(*lowLevel);
-  auto& waitScope = basicContext->waitScope;
-  auto& eventPort = basicContext->eventPort;
-
-  // Historically, `LowLevelAsyncIoProviderImpl` contained the stuff that `BasicContext` now
-  // contains. However, this made it impossible to create more elaborate EventLoop arrangements
-  // while still using the default LLAIOP implementation. For backwards-compatibility,
-  // `setupAsyncIo()` still attaches this context to the LLAIOP, but it's now possible to construct
-  // these objects directly and LLAIOP on top.
-  lowLevel = lowLevel.attach(kj::mv(basicContext));
-
+  auto& waitScope = lowLevel->getWaitScope();
+  auto& eventPort = lowLevel->getEventPort();
   return { kj::mv(lowLevel), kj::mv(ioProvider), waitScope, eventPort };
 }
 
