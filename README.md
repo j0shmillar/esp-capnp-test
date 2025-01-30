@@ -2,9 +2,9 @@
 
 * Download clang based toolchain from https://github.com/espressif/llvm-project/releases/.
 * Extract toolchain and add its `bin` directory to your `PATH` environment variable.
-```bash
-export PATH=</path/to/distro>/esp-clang/bin:$PATH
-```
+   ```bash
+   export PATH=</path/to/distro>/esp-clang/bin:$PATH
+   ```
 * Set `IDF_TOOLCHAIN` environment variable:
    ```bash
    export IDF_TOOLCHAIN=clang
